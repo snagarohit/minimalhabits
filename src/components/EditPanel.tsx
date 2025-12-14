@@ -83,21 +83,24 @@ export function EditPanel({
   // Check if there are unsaved changes
   const hasChanges = useMemo(() => {
     if (mode === 'add-habit') {
+      // Name is required, group/emoji are optional changes
       return habitEdit.name.trim().length > 0
     }
     if (mode === 'edit-habit' && originalHabit) {
-      return (
-        habitEdit.name !== originalHabit.name ||
-        habitEdit.emoji !== (originalHabit.emoji || '') ||
-        habitEdit.groupId !== originalHabit.groupId
-      )
+      // Check for inline new group creation
+      const hasNewGroupChange = showNewGroup && newGroupName.trim().length > 0
+      // Check if any field changed from original
+      const nameChanged = habitEdit.name !== originalHabit.name
+      const emojiChanged = habitEdit.emoji !== (originalHabit.emoji || '')
+      const groupChanged = habitEdit.groupId !== originalHabit.groupId
+      return nameChanged || emojiChanged || groupChanged || hasNewGroupChange
     }
     if (mode === 'edit-group' && selectedGroupId) {
       const group = groups.find(g => g.id === selectedGroupId)
       return group ? groupName !== group.name : false
     }
     return false
-  }, [mode, habitEdit, originalHabit, groupName, selectedGroupId, groups])
+  }, [mode, habitEdit, originalHabit, groupName, selectedGroupId, groups, showNewGroup, newGroupName])
 
   // Reset when panel closes
   useEffect(() => {
