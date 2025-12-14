@@ -287,16 +287,16 @@ function App() {
 
   if (!isLoaded) {
     return (
-      <div className="flex h-screen items-center justify-center bg-zinc-950">
+      <div className="flex h-screen-safe items-center justify-center bg-zinc-950">
         <div className="text-sm text-zinc-500">Loading...</div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
+    <div className="min-h-screen-safe bg-zinc-950 text-zinc-100 safe-area-top">
       {/* Desktop: centered container, Mobile: full width */}
-      <div className="mx-auto max-w-3xl h-screen flex flex-col">
+      <div className="mx-auto max-w-3xl h-screen-safe flex flex-col">
         {/* Header */}
         <header className="flex-shrink-0 border-b border-zinc-800 px-4 py-3 sm:px-6">
           <div className="flex items-center justify-between">
