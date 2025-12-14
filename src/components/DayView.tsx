@@ -86,49 +86,47 @@ export function DayView({
   const dateString = format(date, 'yyyy-MM-dd')
   const gridRef = useRef<HTMLDivElement>(null)
 
-  // Drag selection state
-  const [dragCol, setDragCol] = useState<number | null>(null)
-  const [dragStartRow, setDragStartRow] = useState<number | null>(null)
-  const [dragEndRow, setDragEndRow] = useState<number | null>(null)
-  const isDragging = dragCol !== null && dragStartRow !== null
+  // Drag selection state - supports cross-column selection
+  const [dragStart, setDragStart] = useState<{ col: number; row: number } | null>(null)
+  const [dragEnd, setDragEnd] = useState<{ col: number; row: number } | null>(null)
+  const isDragging = dragStart !== null
 
   // Dialog state
   const [showHabitSelector, setShowHabitSelector] = useState(false)
   const [pendingSelection, setPendingSelection] = useState<{
-    col: number
+    startCol: number
     startRow: number
+    endCol: number
     endRow: number
   } | null>(null)
 
-  // Timer state
-  const [activeTimer, setActiveTimer] = useState<{
+  // Timer state - supports multiple simultaneous timers
+  const [activeTimers, setActiveTimers] = useState<Array<{
+    id: string
     habitId: string
     startTime: string
     startTimestamp: number
     col: number
     row: number
-  } | null>(null)
-  const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  }>>([])
+  const [timerTick, setTimerTick] = useState(0) // Forces re-render for elapsed time
   const [showTimerHabitSelector, setShowTimerHabitSelector] = useState(false)
 
-  // Current time (updates every minute for slot highlighting, every second for timer)
+  // Current time (updates every minute for slot highlighting, every second for timers)
   const [now, setNow] = useState(() => new Date())
   useEffect(() => {
-    const interval = setInterval(() => setNow(new Date()), activeTimer ? 1000 : 60000)
-    return () => clearInterval(interval)
-  }, [activeTimer])
-
-  // Update elapsed seconds when timer is active
-  useEffect(() => {
-    if (!activeTimer) {
-      setElapsedSeconds(0)
-      return
-    }
+    const hasActiveTimers = activeTimers.length > 0
     const interval = setInterval(() => {
-      setElapsedSeconds(Math.floor((Date.now() - activeTimer.startTimestamp) / 1000))
-    }, 1000)
+      setNow(new Date())
+      if (hasActiveTimers) setTimerTick(t => t + 1)
+    }, hasActiveTimers ? 1000 : 60000)
     return () => clearInterval(interval)
-  }, [activeTimer])
+  }, [activeTimers.length])
+
+  // Helper to get elapsed seconds for a timer
+  const getElapsedSeconds = useCallback((startTimestamp: number) => {
+    return Math.floor((Date.now() - startTimestamp) / 1000)
+  }, [timerTick]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const isToday = format(now, 'yyyy-MM-dd') === dateString
   const currentSlot = useMemo(() => {
@@ -235,31 +233,30 @@ export function DayView({
     }))
   }, [dayEntries])
 
-  // Build a simple slot map just for checking if a slot has entries (for click handling)
-  const slotHasEntry = useMemo(() => {
-    const set = new Set<string>()
-    entryLayout.forEach(({ col, startRow, rowSpan }) => {
-      for (let r = startRow; r < startRow + rowSpan; r++) {
-        set.add(`${col}:${r}`)
-      }
-    })
-    return set
-  }, [entryLayout])
+  // Convert col/row to absolute slot index (0 to COLUMNS*ROWS-1)
+  const toAbsoluteSlot = useCallback((col: number, row: number) => col * ROWS + row, [])
+  const fromAbsoluteSlot = useCallback((slot: number) => ({
+    col: Math.floor(slot / ROWS),
+    row: slot % ROWS
+  }), [])
 
-  // Get selected slots during drag (all slots in range, can overlap with existing)
+  // Get selected slots during drag (all slots in range across columns)
   const selectedSlots = useMemo(() => {
     const set = new Set<string>()
-    if (dragCol === null || dragStartRow === null || dragEndRow === null) return set
+    if (!dragStart || !dragEnd) return set
 
-    const minRow = Math.min(dragStartRow, dragEndRow)
-    const maxRow = Math.max(dragStartRow, dragEndRow)
+    const startSlot = toAbsoluteSlot(dragStart.col, dragStart.row)
+    const endSlot = toAbsoluteSlot(dragEnd.col, dragEnd.row)
+    const minSlot = Math.min(startSlot, endSlot)
+    const maxSlot = Math.max(startSlot, endSlot)
 
-    for (let r = minRow; r <= maxRow; r++) {
-      set.add(`${dragCol}:${r}`)
+    for (let s = minSlot; s <= maxSlot; s++) {
+      const { col, row } = fromAbsoluteSlot(s)
+      set.add(`${col}:${row}`)
     }
 
     return set
-  }, [dragCol, dragStartRow, dragEndRow])
+  }, [dragStart, dragEnd, toAbsoluteSlot, fromAbsoluteSlot])
 
   // Get slot from pointer position
   const getSlotFromPointer = useCallback((e: React.PointerEvent | PointerEvent): { col: number; row: number } | null => {
@@ -282,32 +279,27 @@ export function DayView({
 
   // State for editing an entry
   const [editingEntry, setEditingEntry] = useState<string | null>(null)
+  const [showChangeHabit, setShowChangeHabit] = useState(false)
 
-  // Handle pointer down
+  // Handle pointer down - only for drag selection (single clicks handled by slot onClick)
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
-    // Don't handle if timer is active
-    if (activeTimer) return
+    // Don't intercept if clicking on an entry block (let onClick handle it)
+    const target = e.target as HTMLElement
+    if (target.closest('[data-entry]')) {
+      return
+    }
 
     const slot = getSlotFromPointer(e)
     if (!slot) return
 
+    // Store initial position for drag detection
     const { col, row } = slot
 
-    // If this is the current time slot (empty), start timer mode
-    const hasEntries = slotHasEntry.has(`${col}:${row}`)
-
-    if (isToday && currentSlot?.col === col && currentSlot?.row === row && !hasEntries) {
-      setShowTimerHabitSelector(true)
-      return
-    }
-
-    // Start drag selection - allow even on occupied slots to add overlapping events
-    e.preventDefault()
+    // Start potential drag selection (don't prevent default - allow clicks to work)
     gridRef.current?.setPointerCapture(e.pointerId)
-    setDragCol(col)
-    setDragStartRow(row)
-    setDragEndRow(row)
-  }, [getSlotFromPointer, slotHasEntry, activeTimer, isToday, currentSlot])
+    setDragStart({ col, row })
+    setDragEnd({ col, row })
+  }, [getSlotFromPointer])
 
   // Handle pointer move
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
@@ -316,99 +308,126 @@ export function DayView({
     const slot = getSlotFromPointer(e)
     if (!slot) return
 
-    // Only update if in same column
-    if (slot.col === dragCol) {
-      setDragEndRow(slot.row)
-    }
-  }, [isDragging, dragCol, getSlotFromPointer])
+    // Allow cross-column selection
+    setDragEnd(slot)
+  }, [isDragging, getSlotFromPointer])
 
-  // Handle pointer up
+  // Handle pointer up - only process if user actually dragged (multi-slot selection)
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
     if (gridRef.current) {
       gridRef.current.releasePointerCapture(e.pointerId)
     }
 
-    if (!isDragging || dragCol === null || dragStartRow === null || dragEndRow === null) {
-      setDragCol(null)
-      setDragStartRow(null)
-      setDragEndRow(null)
+    if (!isDragging || !dragStart || !dragEnd) {
+      setDragStart(null)
+      setDragEnd(null)
       return
     }
 
-    // Check if we have valid selection
-    if (selectedSlots.size > 0) {
-      const minRow = Math.min(dragStartRow, dragEndRow)
-      const maxRow = Math.max(dragStartRow, dragEndRow)
+    // Only show selector if user dragged to multiple slots (single clicks handled by slot onClick)
+    const isSingleSlot = dragStart.col === dragEnd.col && dragStart.row === dragEnd.row
+    if (isSingleSlot) {
+      // Single slot - let onClick handle it
+      setDragStart(null)
+      setDragEnd(null)
+      return
+    }
 
-      // Allow adding events even on occupied slots (will create overlaps)
-      setPendingSelection({ col: dragCol, startRow: minRow, endRow: maxRow })
+    // Multi-slot drag selection
+    if (selectedSlots.size > 1) {
+      // Normalize so start is before end
+      const startSlot = toAbsoluteSlot(dragStart.col, dragStart.row)
+      const endSlot = toAbsoluteSlot(dragEnd.col, dragEnd.row)
+      const minSlotPos = Math.min(startSlot, endSlot)
+      const maxSlotPos = Math.max(startSlot, endSlot)
+      const minPos = fromAbsoluteSlot(minSlotPos)
+      const maxPos = fromAbsoluteSlot(maxSlotPos)
+
+      setPendingSelection({
+        startCol: minPos.col,
+        startRow: minPos.row,
+        endCol: maxPos.col,
+        endRow: maxPos.row
+      })
       setShowHabitSelector(true)
     }
 
-    setDragCol(null)
-    setDragStartRow(null)
-    setDragEndRow(null)
-  }, [isDragging, dragCol, dragStartRow, dragEndRow, selectedSlots])
+    setDragStart(null)
+    setDragEnd(null)
+  }, [isDragging, dragStart, dragEnd, selectedSlots, toAbsoluteSlot, fromAbsoluteSlot])
 
   // Handle pointer cancel
   const handlePointerCancel = useCallback(() => {
-    setDragCol(null)
-    setDragStartRow(null)
-    setDragEndRow(null)
+    setDragStart(null)
+    setDragEnd(null)
   }, [])
 
   // Handle habit selection from dialog (for drag selection)
   const handleSelectHabit = useCallback((habitId: string) => {
     if (!pendingSelection) return
 
-    const { hour, minute } = slotToTime(pendingSelection.col, pendingSelection.startRow)
-    const duration = (pendingSelection.endRow - pendingSelection.startRow + 1) * 15
+    const { startCol, startRow, endCol, endRow } = pendingSelection
+    const { hour, minute } = slotToTime(startCol, startRow)
+
+    // Calculate total slots across columns
+    const startSlot = toAbsoluteSlot(startCol, startRow)
+    const endSlot = toAbsoluteSlot(endCol, endRow)
+    const totalSlots = endSlot - startSlot + 1
+    const duration = totalSlots * 15
 
     onAddTimedEntry(habitId, dateString, formatTimeString(hour, minute), duration)
     onCelebrate()
 
     setShowHabitSelector(false)
     setPendingSelection(null)
-  }, [pendingSelection, dateString, onAddTimedEntry, onCelebrate])
+  }, [pendingSelection, dateString, onAddTimedEntry, onCelebrate, toAbsoluteSlot])
 
   // Start timer with selected habit
   const handleStartTimer = useCallback((habitId: string) => {
     if (!currentSlot) return
 
     const { hour, minute } = slotToTime(currentSlot.col, currentSlot.row)
-    setActiveTimer({
+    const newTimer = {
+      id: `timer-${Date.now()}`,
       habitId,
       startTime: formatTimeString(hour, minute),
       startTimestamp: Date.now(),
       col: currentSlot.col,
       row: currentSlot.row,
-    })
+    }
+    setActiveTimers(prev => [...prev, newTimer])
     setShowTimerHabitSelector(false)
   }, [currentSlot])
 
-  // Stop timer and save entry
-  const handleStopTimer = useCallback(() => {
-    if (!activeTimer) return
+  // Stop a specific timer and save entry
+  const handleStopTimer = useCallback((timerId: string) => {
+    const timer = activeTimers.find(t => t.id === timerId)
+    if (!timer) return
 
+    const elapsedSeconds = getElapsedSeconds(timer.startTimestamp)
     // Round up to nearest 15 minutes, minimum 15
     const durationMinutes = Math.max(15, Math.ceil(elapsedSeconds / 60 / 15) * 15)
 
-    onAddTimedEntry(activeTimer.habitId, dateString, activeTimer.startTime, durationMinutes)
+    onAddTimedEntry(timer.habitId, dateString, timer.startTime, durationMinutes)
     onCelebrate()
 
-    setActiveTimer(null)
-    setElapsedSeconds(0)
-  }, [activeTimer, elapsedSeconds, dateString, onAddTimedEntry, onCelebrate])
+    setActiveTimers(prev => prev.filter(t => t.id !== timerId))
+  }, [activeTimers, getElapsedSeconds, dateString, onAddTimedEntry, onCelebrate])
 
   // Navigation
   const goToPrevDay = () => onDateChange(subDays(date, 1))
   const goToNextDay = () => onDateChange(addDays(date, 1))
   const goToToday = () => onDateChange(new Date())
 
+  // Get timer info helpers
+  const getTimerHabit = useCallback((timer: typeof activeTimers[0]) => {
+    return habits.find(h => h.id === timer.habitId)
+  }, [habits])
 
-  // Get active timer habit info
-  const activeHabit = activeTimer ? habits.find(h => h.id === activeTimer.habitId) : null
-  const activeColor = activeHabit ? (habitDisplayColors.get(activeHabit.id) || activeHabit.color) : undefined
+  const getTimerColor = useCallback((timer: typeof activeTimers[0]) => {
+    const habit = getTimerHabit(timer)
+    return habit ? (habitDisplayColors.get(habit.id) || habit.color) : '#666'
+  }, [getTimerHabit, habitDisplayColors])
 
   return (
     <div className="flex h-full flex-col">
@@ -445,35 +464,42 @@ export function DayView({
         </div>
       </div>
 
-      {/* Active timer bar */}
-      {activeTimer && activeHabit && (
-        <div
-          className="flex-shrink-0 px-4 py-2 border-b border-zinc-800 flex items-center gap-3"
-          style={{ backgroundColor: activeColor + '20' }}
-        >
+      {/* Active timer bars - supports multiple */}
+      {activeTimers.map(timer => {
+        const habit = getTimerHabit(timer)
+        const color = getTimerColor(timer)
+        const elapsed = getElapsedSeconds(timer.startTimestamp)
+        if (!habit) return null
+        return (
           <div
-            className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
-            style={{ backgroundColor: activeColor }}
+            key={timer.id}
+            className="flex-shrink-0 px-4 py-2 border-b border-zinc-800 flex items-center gap-3"
+            style={{ backgroundColor: color + '20' }}
           >
-            {activeHabit.emoji && (
-              <span className="text-lg" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}>{activeHabit.emoji}</span>
-            )}
+            <div
+              className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+              style={{ backgroundColor: color }}
+            >
+              {habit.emoji && (
+                <span className="text-lg" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}>{habit.emoji}</span>
+              )}
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-zinc-100 truncate">{habit.name}</p>
+              <p className="text-xs text-zinc-500">Recording...</p>
+            </div>
+            <span className="font-mono text-xl text-zinc-100 tabular-nums">
+              {formatElapsed(elapsed)}
+            </span>
+            <button
+              onClick={() => handleStopTimer(timer.id)}
+              className="px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              Stop
+            </button>
           </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-zinc-100 truncate">{activeHabit.name}</p>
-            <p className="text-xs text-zinc-500">Recording...</p>
-          </div>
-          <span className="font-mono text-xl text-zinc-100 tabular-nums">
-            {formatElapsed(elapsedSeconds)}
-          </span>
-          <button
-            onClick={handleStopTimer}
-            className="px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white text-sm font-medium rounded-lg transition-colors"
-          >
-            Stop
-          </button>
-        </div>
-      )}
+        )
+      })}
 
       {/* Grid */}
       <div
@@ -497,21 +523,41 @@ export function DayView({
                 const key = `${col}:${row}`
                 const isSelected = selectedSlots.has(key)
                 const isHourStart = row % SLOTS_PER_HOUR === 0
-                const isCurrent = currentSlot?.col === col && currentSlot?.row === row && !activeTimer
+                const timersAtSlot = activeTimers.filter(t => t.col === col && t.row === row)
+                const hasTimer = timersAtSlot.length > 0
+                const isCurrent = currentSlot?.col === col && currentSlot?.row === row
                 const isCurrentHour = isHourStart && currentSlot?.col === col && Math.floor(currentSlot?.row / SLOTS_PER_HOUR) === Math.floor(row / SLOTS_PER_HOUR)
-                const isTimerSlot = activeTimer?.col === col && activeTimer?.row === row
                 const { hour } = slotToTime(col, row)
+
+                // Handle single click on slot to add entry
+                const handleSlotClick = () => {
+                  // If clicking current time slot, show timer selector
+                  if (isToday && isCurrent) {
+                    setShowTimerHabitSelector(true)
+                    return
+                  }
+                  // Otherwise, open habit selector for this single slot
+                  setPendingSelection({
+                    startCol: col,
+                    startRow: row,
+                    endCol: col,
+                    endRow: row
+                  })
+                  setShowHabitSelector(true)
+                }
 
                 return (
                   <div
                     key={row}
                     data-col={col}
                     data-row={row}
+                    data-slot
+                    onClick={handleSlotClick}
                     className={`
-                      flex-1 relative select-none
+                      flex-1 relative select-none cursor-pointer
                       ${isHourStart ? 'border-t border-zinc-700/50' : 'border-t border-zinc-800/30'}
-                      ${isCurrent ? 'bg-zinc-800/50' : ''}
-                      ${isTimerSlot ? 'ring-2 ring-inset ring-zinc-400 bg-zinc-700/50' : ''}
+                      ${isCurrent && !hasTimer ? 'bg-zinc-800/50' : ''}
+                      ${hasTimer ? 'ring-2 ring-inset ring-zinc-400 bg-zinc-700/50' : ''}
                     `}
                   >
                     {/* Hour label in left gutter - always visible on hour-start slots */}
@@ -559,15 +605,23 @@ export function DayView({
                       </div>
                     )}
 
-                    {/* Timer slot indicator */}
-                    {isTimerSlot && activeHabit && (
-                      <div className="absolute left-[15%] right-0 top-0 bottom-0 flex items-center gap-0.5 px-0.5 overflow-hidden pointer-events-none">
-                        <span className="text-[9px] leading-none flex-shrink-0 w-3 text-center" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}>
-                          {activeHabit.emoji || ''}
-                        </span>
-                        <span className="text-[9px] text-white truncate leading-none font-medium">
-                          {activeHabit.name}
-                        </span>
+                    {/* Timer slot indicators */}
+                    {hasTimer && (
+                      <div className="absolute left-[15%] right-0 top-0 bottom-0 flex items-center gap-1 px-0.5 overflow-hidden pointer-events-none">
+                        {timersAtSlot.map(timer => {
+                          const timerHabit = getTimerHabit(timer)
+                          if (!timerHabit) return null
+                          return (
+                            <div key={timer.id} className="flex items-center gap-0.5 min-w-0">
+                              <span className="text-[9px] leading-none flex-shrink-0" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}>
+                                {timerHabit.emoji || ''}
+                              </span>
+                              <span className="text-[9px] text-white truncate leading-none font-medium">
+                                {timerHabit.name}
+                              </span>
+                            </div>
+                          )
+                        })}
                       </div>
                     )}
 
@@ -600,6 +654,7 @@ export function DayView({
                   return (
                     <div
                       key={entry.id}
+                      data-entry={entry.id}
                       onClick={(e) => {
                         e.stopPropagation()
                         setEditingEntry(entry.id)
@@ -684,7 +739,7 @@ export function DayView({
           setShowHabitSelector(false)
           setPendingSelection(null)
         }}
-        title={pendingSelection ? `Log ${(pendingSelection.endRow - pendingSelection.startRow + 1) * 15} min` : 'Select Habit'}
+        title={pendingSelection ? `Log ${(toAbsoluteSlot(pendingSelection.endCol, pendingSelection.endRow) - toAbsoluteSlot(pendingSelection.startCol, pendingSelection.startRow) + 1) * 15} min` : 'Select Habit'}
       >
         <div className="px-4 py-4">
           <HabitChipList
@@ -726,7 +781,7 @@ export function DayView({
 
       {/* Edit entry dialog */}
       <ResponsiveDialog
-        isOpen={editingEntry !== null}
+        isOpen={editingEntry !== null && !showChangeHabit}
         onClose={() => setEditingEntry(null)}
         title="Edit Entry"
       >
@@ -738,58 +793,96 @@ export function DayView({
 
             if (!entry || !habit) return null
 
-            // Calculate end time
+            // Calculate times
             const [startH, startM] = entry.startTime.split(':').map(Number)
-            const endMinutes = startH * 60 + startM + entry.duration
+            const startMinutes = startH * 60 + startM
+            const endMinutes = startMinutes + entry.duration
             const endH = Math.floor(endMinutes / 60) % 24
             const endM = endMinutes % 60
-            const endTime = `${endH.toString().padStart(2, '0')}:${endM.toString().padStart(2, '0')}`
+
+            const formatTime = (h: number, m: number) =>
+              `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`
+
+            const adjustStartTime = (delta: number) => {
+              const newStartMinutes = Math.max(0, Math.min(24 * 60 - 15, startMinutes + delta))
+              const newDuration = Math.max(15, entry.duration - delta)
+              const newH = Math.floor(newStartMinutes / 60)
+              const newM = newStartMinutes % 60
+              onUpdateTimedEntry(entry.id, {
+                startTime: formatTime(newH, newM),
+                duration: newDuration
+              })
+            }
+
+            const adjustEndTime = (delta: number) => {
+              const newDuration = Math.max(15, entry.duration + delta)
+              onUpdateTimedEntry(entry.id, { duration: newDuration })
+            }
 
             return (
               <>
-                {/* Entry info */}
-                <div className="flex items-center gap-3 mb-4 pb-4 border-b border-zinc-800">
+                {/* Habit info - clickable to change */}
+                <button
+                  onClick={() => setShowChangeHabit(true)}
+                  className="w-full flex items-center gap-3 mb-4 pb-4 border-b border-zinc-800 hover:bg-zinc-800/50 -mx-4 px-4 py-2 transition-colors"
+                >
                   <div
-                    className="w-12 h-12 rounded-full flex items-center justify-center flex-shrink-0"
+                    className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
                     style={{ backgroundColor: color }}
                   >
                     {habit.emoji && (
-                      <span className="text-2xl" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}>{habit.emoji}</span>
+                      <span className="text-xl" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}>{habit.emoji}</span>
                     )}
                   </div>
-                  <div className="flex-1">
-                    <p className="text-base font-medium text-zinc-100">{habit.name}</p>
-                    <p className="text-sm text-zinc-400">
-                      {entry.startTime} - {endTime}
-                    </p>
-                    <p className="text-xs text-zinc-500">
-                      {entry.duration} minutes
-                    </p>
+                  <div className="flex-1 text-left">
+                    <p className="text-sm font-medium text-zinc-100">{habit.name}</p>
+                    <p className="text-xs text-zinc-500">Tap to change habit</p>
+                  </div>
+                  <svg className="h-4 w-4 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                  </svg>
+                </button>
+
+                {/* Start time adjustment */}
+                <div className="mb-3">
+                  <p className="text-xs text-zinc-500 mb-2">Start time</p>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => adjustStartTime(-15)}
+                      disabled={startMinutes <= 0}
+                      className="w-10 h-10 rounded-lg bg-zinc-800 text-zinc-300 text-lg font-medium hover:bg-zinc-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      −
+                    </button>
+                    <span className="flex-1 text-center text-base font-medium text-zinc-100 font-mono">
+                      {entry.startTime}
+                    </span>
+                    <button
+                      onClick={() => adjustStartTime(15)}
+                      disabled={entry.duration <= 15}
+                      className="w-10 h-10 rounded-lg bg-zinc-800 text-zinc-300 text-lg font-medium hover:bg-zinc-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      +
+                    </button>
                   </div>
                 </div>
 
-                {/* Duration adjustment */}
+                {/* End time adjustment */}
                 <div className="mb-4">
-                  <p className="text-xs text-zinc-500 mb-2">Adjust duration</p>
+                  <p className="text-xs text-zinc-500 mb-2">End time</p>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => {
-                        if (entry.duration > 15) {
-                          onUpdateTimedEntry(entry.id, { duration: entry.duration - 15 })
-                        }
-                      }}
+                      onClick={() => adjustEndTime(-15)}
                       disabled={entry.duration <= 15}
                       className="w-10 h-10 rounded-lg bg-zinc-800 text-zinc-300 text-lg font-medium hover:bg-zinc-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       −
                     </button>
-                    <span className="flex-1 text-center text-lg font-medium text-zinc-100">
-                      {entry.duration} min
+                    <span className="flex-1 text-center text-base font-medium text-zinc-100 font-mono">
+                      {formatTime(endH, endM)}
                     </span>
                     <button
-                      onClick={() => {
-                        onUpdateTimedEntry(entry.id, { duration: entry.duration + 15 })
-                      }}
+                      onClick={() => adjustEndTime(15)}
                       className="w-10 h-10 rounded-lg bg-zinc-800 text-zinc-300 text-lg font-medium hover:bg-zinc-700 transition-colors"
                     >
                       +
@@ -797,11 +890,16 @@ export function DayView({
                   </div>
                 </div>
 
+                {/* Duration display */}
+                <div className="text-center text-xs text-zinc-500 mb-4 py-2 bg-zinc-800/50 rounded-lg">
+                  {entry.duration} minutes
+                </div>
+
                 {/* Actions */}
                 <div className="flex gap-3">
                   <button
                     onClick={() => setEditingEntry(null)}
-                    className="flex-1 py-2.5 px-4 rounded-lg bg-zinc-800 text-zinc-300 text-sm font-medium hover:bg-zinc-700 transition-colors"
+                    className="flex-1 py-2.5 px-4 rounded-lg bg-zinc-100 text-zinc-900 text-sm font-medium hover:bg-zinc-200 transition-colors"
                   >
                     Done
                   </button>
@@ -820,6 +918,33 @@ export function DayView({
               </>
             )
           })()}
+        </div>
+      </ResponsiveDialog>
+
+      {/* Change habit dialog */}
+      <ResponsiveDialog
+        isOpen={showChangeHabit && editingEntry !== null}
+        onClose={() => setShowChangeHabit(false)}
+        title="Change Habit"
+      >
+        <div className="px-4 py-4">
+          <HabitChipList
+            habits={habits}
+            groups={groups}
+            onSelect={(habitId) => {
+              if (editingEntry) {
+                onUpdateTimedEntry(editingEntry, { habitId })
+                setShowChangeHabit(false)
+              }
+            }}
+            emptyMessage="No habits yet"
+            emptySubMessage="Tap below to add your first habit"
+            onAddHabit={() => {
+              setShowChangeHabit(false)
+              setEditingEntry(null)
+              onOpenEditPanel()
+            }}
+          />
         </div>
       </ResponsiveDialog>
     </div>
