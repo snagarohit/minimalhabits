@@ -15,7 +15,7 @@ import {
 import { DayCell } from './DayCell'
 import type { Habit, DayData } from '../types'
 
-export type ViewMode = 'month' | 'week' | 'workweek'
+export type ViewMode = 'month' | 'week' | 'workweek' | 'day'
 
 interface CalendarProps {
   habits: Habit[]
@@ -274,20 +274,16 @@ function DayCellVertical({ day, completions, totalHabits: _totalHabits, habitDis
       <div className="flex-1 flex flex-wrap items-center gap-1.5 sm:gap-2 overflow-hidden">
         {completedHabits.map(({ habit }) => {
           const color = habitDisplayColors.get(habit.id) || habit.color
-          return habit.emoji ? (
+          return (
             <div
               key={habit.id}
               className="w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center flex-shrink-0"
-              style={{ backgroundColor: color + '40' }}
-            >
-              <span className="text-base sm:text-xl leading-none">{habit.emoji}</span>
-            </div>
-          ) : (
-            <div
-              key={habit.id}
-              className="w-6 h-6 sm:w-8 sm:h-8 rounded-full flex-shrink-0"
               style={{ backgroundColor: color }}
-            />
+            >
+              {habit.emoji && (
+                <span className="text-base sm:text-xl leading-none" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}>{habit.emoji}</span>
+              )}
+            </div>
           )
         })}
       </div>

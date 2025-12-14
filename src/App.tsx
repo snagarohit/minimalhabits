@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
 import { format } from 'date-fns'
 import { Calendar, ViewMode } from './components/Calendar'
+import { DayView } from './components/DayView'
 import { DayModal } from './components/DayModal'
 import { Legend } from './components/Legend'
 import { EditPanel } from './components/EditPanel'
@@ -51,6 +52,7 @@ function App() {
   const {
     habits,
     groups,
+    timedEntries,
     isLoaded,
     addHabit,
     updateHabit,
@@ -64,6 +66,9 @@ function App() {
     getStreak,
     loadAllData,
     getAllData,
+    addTimedEntry,
+    updateTimedEntry,
+    deleteTimedEntry,
   } = useHabits({
     onDataChange: handleCloudDataChange,
   })
@@ -102,6 +107,7 @@ function App() {
     return (saved as ViewMode) || 'month'
   })
   const [showViewMenu, setShowViewMenu] = useState(false)
+  const [dayViewDate, setDayViewDate] = useState(() => new Date())
 
   // Persist view mode
   useEffect(() => {
@@ -119,6 +125,7 @@ function App() {
   }, [showViewMenu])
 
   const viewModeLabels: Record<ViewMode, string> = {
+    day: 'Day',
     month: 'Month',
     week: 'Week',
     workweek: 'Work Week',
@@ -308,7 +315,11 @@ function App() {
                   className="flex h-9 items-center gap-1.5 rounded-lg px-2 text-zinc-400 transition-colors hover:text-zinc-100 hover:bg-zinc-800"
                   title={`View: ${viewModeLabels[viewMode]}`}
                 >
-                  {viewMode === 'month' ? (
+                  {viewMode === 'day' ? (
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  ) : viewMode === 'month' ? (
                     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
                     </svg>
@@ -327,7 +338,7 @@ function App() {
                 </button>
                 {showViewMenu && (
                   <div className="absolute right-0 top-full mt-1 z-50 min-w-[150px] rounded-lg border border-zinc-800 bg-zinc-900 py-1 shadow-xl">
-                    {(['month', 'week', 'workweek'] as ViewMode[]).map((mode) => (
+                    {(['day', 'month', 'week', 'workweek'] as ViewMode[]).map((mode) => (
                       <button
                         key={mode}
                         onClick={() => {
@@ -338,7 +349,11 @@ function App() {
                           viewMode === mode ? 'text-zinc-100' : 'text-zinc-400'
                         }`}
                       >
-                        {mode === 'month' ? (
+                        {mode === 'day' ? (
+                          <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        ) : mode === 'month' ? (
                           <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                             <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z" />
                           </svg>
@@ -421,26 +436,46 @@ function App() {
           </div>
         </header>
 
-        {/* Calendar - main view (on top, takes most space) */}
+        {/* Main view (on top, takes most space) */}
         <div className="min-h-0 flex-1">
-          <Calendar
-            habits={visibleHabits}
-            habitDisplayColors={habitDisplayColors}
-            getCompletionValue={getCompletionValue}
-            onDayClick={handleDayClick}
-            viewMode={viewMode}
-          />
+          {viewMode === 'day' ? (
+            <DayView
+              date={dayViewDate}
+              habits={habits}
+              groups={groups}
+              timedEntries={timedEntries}
+              completions={getAllData().completions}
+              habitDisplayColors={habitDisplayColors}
+              onDateChange={setDayViewDate}
+              onAddTimedEntry={addTimedEntry}
+              onUpdateTimedEntry={updateTimedEntry}
+              onDeleteTimedEntry={deleteTimedEntry}
+              onToggleCompletion={toggleBinary}
+              onCelebrate={celebrate}
+              onOpenEditPanel={() => setShowEditPanel(true)}
+            />
+          ) : (
+            <Calendar
+              habits={visibleHabits}
+              habitDisplayColors={habitDisplayColors}
+              getCompletionValue={getCompletionValue}
+              onDayClick={handleDayClick}
+              viewMode={viewMode}
+            />
+          )}
         </div>
 
-        {/* Legend - minimal visual key at bottom */}
-        <Legend
-          habits={habits}
-          groups={groups}
-          visibleHabitIds={visibleHabitIds}
-          habitDisplayColors={habitDisplayColors}
-          onToggleVisibility={handleToggleVisibility}
-          onToggleGroupVisibility={handleToggleGroupVisibility}
-        />
+        {/* Legend - minimal visual key at bottom (hidden in day view) */}
+        {viewMode !== 'day' && (
+          <Legend
+            habits={habits}
+            groups={groups}
+            visibleHabitIds={visibleHabitIds}
+            habitDisplayColors={habitDisplayColors}
+            onToggleVisibility={handleToggleVisibility}
+            onToggleGroupVisibility={handleToggleGroupVisibility}
+          />
+        )}
 
       </div>
 

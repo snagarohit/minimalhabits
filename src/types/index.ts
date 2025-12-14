@@ -19,10 +19,21 @@ export interface HabitCompletion {
   value: number // 1 for binary complete, count for counter
 }
 
+// Timed entry for day view journaling
+// A "day" in day view runs from 4:00 AM to 6:00 AM next day
+export interface TimedEntry {
+  id: string
+  habitId: string
+  date: string // YYYY-MM-DD - the logical day (4am start)
+  startTime: string // HH:MM (24h format)
+  duration: number // minutes
+}
+
 export interface HabitData {
   habits: Habit[]
   completions: HabitCompletion[]
   groups: HabitGroup[]
+  timedEntries?: TimedEntry[] // Optional for backward compatibility
 }
 
 export interface WeekData {

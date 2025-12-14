@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { format, subDays } from 'date-fns'
-import type { Habit, HabitCompletion, HabitData, HabitGroup } from '../types'
+import type { Habit, HabitCompletion, HabitData, HabitGroup, TimedEntry } from '../types'
 import { HABIT_COLORS } from '../types'
 
 const STORAGE_KEY = 'habit-calendar-data'
@@ -18,12 +18,13 @@ function loadFromStorage(): HabitData {
         habits: parsed.habits || [],
         completions: parsed.completions || [],
         groups: parsed.groups || [],
+        timedEntries: parsed.timedEntries || [],
       }
     }
   } catch (e) {
     console.error('Failed to load habits from localStorage:', e)
   }
-  return { habits: [], completions: [], groups: [] }
+  return { habits: [], completions: [], groups: [], timedEntries: [] }
 }
 
 function saveToStorage(data: HabitData): void {
@@ -51,6 +52,7 @@ export function useHabits(options: UseHabitsOptions = {}) {
   const [habits, setHabits] = useState<Habit[]>([])
   const [completions, setCompletions] = useState<HabitCompletion[]>([])
   const [groups, setGroups] = useState<HabitGroup[]>([])
+  const [timedEntries, setTimedEntries] = useState<TimedEntry[]>([])
   const [isLoaded, setIsLoaded] = useState(false)
 
   useEffect(() => {
@@ -58,22 +60,24 @@ export function useHabits(options: UseHabitsOptions = {}) {
     setHabits(data.habits)
     setCompletions(data.completions)
     setGroups(data.groups)
+    setTimedEntries(data.timedEntries || [])
     setIsLoaded(true)
   }, [])
 
   useEffect(() => {
     if (isLoaded) {
-      const data = { habits, completions, groups }
+      const data = { habits, completions, groups, timedEntries }
       saveToStorage(data)
       onDataChange?.(data)
     }
-  }, [habits, completions, groups, isLoaded, onDataChange])
+  }, [habits, completions, groups, timedEntries, isLoaded, onDataChange])
 
   // Load all data from external source (for cloud sync)
   const loadAllData = useCallback((data: HabitData) => {
     setHabits(data.habits)
     setCompletions(data.completions)
     setGroups(data.groups)
+    setTimedEntries(data.timedEntries || [])
   }, [])
 
   // Group management
@@ -166,12 +170,20 @@ export function useHabits(options: UseHabitsOptions = {}) {
 
   const getCompletionValue = useCallback(
     (habitId: string, date: string): number => {
+      // Check regular completions first
       const completion = completions.find(
         (c) => c.habitId === habitId && c.date === date
       )
-      return completion?.value || 0
+      if (completion?.value) return completion.value
+
+      // Also check if there are any timed entries for this habit on this date
+      // Timed entries count as completion (collapsed to single dot in calendar views)
+      const hasTimedEntry = timedEntries.some(
+        (e) => e.habitId === habitId && e.date === date
+      )
+      return hasTimedEntry ? 1 : 0
     },
-    [completions]
+    [completions, timedEntries]
   )
 
   const getStreak = useCallback(
@@ -214,13 +226,60 @@ export function useHabits(options: UseHabitsOptions = {}) {
 
   // Get all data as HabitData object
   const getAllData = useCallback((): HabitData => {
-    return { habits, completions, groups }
-  }, [habits, completions, groups])
+    return { habits, completions, groups, timedEntries }
+  }, [habits, completions, groups, timedEntries])
+
+  // Timed entry management (for day view)
+  const addTimedEntry = useCallback((habitId: string, date: string, startTime: string, duration: number) => {
+    const newEntry: TimedEntry = {
+      id: generateId(),
+      habitId,
+      date,
+      startTime,
+      duration,
+    }
+    setTimedEntries((prev) => [...prev, newEntry])
+    return newEntry
+  }, [])
+
+  const updateTimedEntry = useCallback((id: string, updates: Partial<Omit<TimedEntry, 'id'>>) => {
+    setTimedEntries((prev) =>
+      prev.map((e) => (e.id === id ? { ...e, ...updates } : e))
+    )
+  }, [])
+
+  const deleteTimedEntry = useCallback((id: string) => {
+    setTimedEntries((prev) => prev.filter((e) => e.id !== id))
+  }, [])
+
+  const getTimedEntriesForDate = useCallback(
+    (date: string): TimedEntry[] => {
+      return timedEntries.filter((e) => e.date === date)
+    },
+    [timedEntries]
+  )
+
+  // Check if a habit has any timed entries on a date
+  const hasTimedEntryForDate = useCallback(
+    (habitId: string, date: string): boolean => {
+      return timedEntries.some((e) => e.habitId === habitId && e.date === date)
+    },
+    [timedEntries]
+  )
+
+  // Get completions for a date (used by DayView to show quick-logged items)
+  const getCompletionsForDate = useCallback(
+    (date: string) => {
+      return completions.filter((c) => c.date === date && c.value > 0)
+    },
+    [completions]
+  )
 
   return {
     habits,
     completions,
     groups,
+    timedEntries,
     isLoaded,
     addGroup,
     updateGroup,
@@ -236,5 +295,11 @@ export function useHabits(options: UseHabitsOptions = {}) {
     getVisibleHabits,
     loadAllData,
     getAllData,
+    addTimedEntry,
+    updateTimedEntry,
+    deleteTimedEntry,
+    getTimedEntriesForDate,
+    hasTimedEntryForDate,
+    getCompletionsForDate,
   }
 }

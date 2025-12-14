@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useCallback } from 'react'
 import { ResponsiveDialog } from './ResponsiveDialog'
+import { HabitChipList } from './HabitChipList'
 import type { Habit, HabitGroup } from '../types'
 
 interface LegendProps {
@@ -21,7 +22,7 @@ export function Legend({
 }: LegendProps) {
   const [showVisibilityDialog, setShowVisibilityDialog] = useState(false)
 
-  // Get visible habits for legend
+  // Get visible habits for legend display
   const visibleHabits = useMemo(() => {
     return habits.filter((h) => {
       if (!visibleHabitIds.has(h.id)) return false
@@ -33,19 +34,51 @@ export function Legend({
     })
   }, [habits, visibleHabitIds, groups])
 
-  // Organize habits by group
-  const organizedData = useMemo(() => {
-    const ungrouped = habits.filter(h => !h.groupId)
-    const grouped = groups.map(group => ({
-      group,
-      habits: habits.filter(h => h.groupId === group.id)
-    })).filter(g => g.habits.length > 0)
-    return { ungrouped, grouped }
-  }, [habits, groups])
-
   // Count visible/total
   const visibleCount = visibleHabits.length
   const totalCount = habits.length
+
+  // Check if a habit is visible (selected)
+  const getIsSelected = useCallback((habitId: string) => {
+    return visibleHabitIds.has(habitId)
+  }, [visibleHabitIds])
+
+  // Check if a habit is disabled (its group is hidden)
+  const getIsDisabled = useCallback((habitId: string) => {
+    const habit = habits.find(h => h.id === habitId)
+    if (!habit?.groupId) return false
+    const group = groups.find(g => g.id === habit.groupId)
+    return group ? !group.visible : false
+  }, [habits, groups])
+
+  // Check if a group is visible (selected)
+  const getIsGroupSelected = useCallback((groupId: string) => {
+    const group = groups.find(g => g.id === groupId)
+    return group?.visible ?? false
+  }, [groups])
+
+  // Show all habits
+  const handleShowAll = useCallback(() => {
+    habits.forEach(h => {
+      if (!visibleHabitIds.has(h.id)) {
+        onToggleVisibility(h.id)
+      }
+    })
+    groups.forEach(g => {
+      if (!g.visible) {
+        onToggleGroupVisibility(g.id)
+      }
+    })
+  }, [habits, groups, visibleHabitIds, onToggleVisibility, onToggleGroupVisibility])
+
+  // Hide all habits
+  const handleHideAll = useCallback(() => {
+    habits.forEach(h => {
+      if (visibleHabitIds.has(h.id)) {
+        onToggleVisibility(h.id)
+      }
+    })
+  }, [habits, visibleHabitIds, onToggleVisibility])
 
   return (
     <>
@@ -71,19 +104,14 @@ export function Legend({
                     const displayColor = habitDisplayColors.get(habit.id) || habit.color
                     return (
                       <div key={habit.id} className="flex items-center gap-1.5">
-                        {habit.emoji ? (
-                          <div
-                            className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
-                            style={{ backgroundColor: displayColor + '40' }}
-                          >
-                            <span className="text-xs leading-none">{habit.emoji}</span>
-                          </div>
-                        ) : (
-                          <div
-                            className="w-5 h-5 rounded-full flex-shrink-0"
-                            style={{ backgroundColor: displayColor }}
-                          />
+                        <div
+                        className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+                        style={{ backgroundColor: displayColor }}
+                      >
+                        {habit.emoji && (
+                          <span className="text-xs leading-none" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}>{habit.emoji}</span>
                         )}
+                      </div>
                         <span className="text-xs text-zinc-400">{habit.name}</span>
                       </div>
                     )
@@ -122,118 +150,31 @@ export function Legend({
             Showing {visibleCount} of {totalCount} habits
           </div>
 
-          {habits.length === 0 ? (
-            <div className="py-8 text-center">
-              <p className="text-zinc-500 text-sm">No habits yet</p>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {/* Grouped habits */}
-              {organizedData.grouped.map(({ group, habits: groupHabits }) => (
-                <div key={group.id} className="flex items-center gap-2 flex-wrap">
-                  {/* Group toggle */}
-                  <button
-                    onClick={() => onToggleGroupVisibility(group.id)}
-                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                      group.visible
-                        ? 'bg-zinc-800 text-zinc-200 hover:bg-zinc-700'
-                        : 'bg-zinc-900 text-zinc-500 hover:bg-zinc-800'
-                    }`}
-                  >
-                    <svg className={`h-3.5 w-3.5 ${group.visible ? 'text-zinc-400' : 'text-zinc-600'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
-                    </svg>
-                    <span className={!group.visible ? 'line-through opacity-60' : ''}>{group.name}</span>
-                  </button>
-
-                  {/* Habits in this group */}
-                  {groupHabits.map((habit) => {
-                    const isVisible = visibleHabitIds.has(habit.id)
-                    const groupHidden = !group.visible
-                    return (
-                      <button
-                        key={habit.id}
-                        onClick={() => !groupHidden && onToggleVisibility(habit.id)}
-                        disabled={groupHidden}
-                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors ${
-                          groupHidden
-                            ? 'bg-zinc-900/50 text-zinc-600 cursor-not-allowed'
-                            : isVisible
-                              ? 'bg-zinc-900 text-zinc-300 hover:bg-zinc-800'
-                              : 'bg-zinc-900/50 text-zinc-500 hover:bg-zinc-900'
-                        }`}
-                      >
-                        {habit.emoji && (
-                          <span className={!isVisible || groupHidden ? 'opacity-40' : ''}>{habit.emoji}</span>
-                        )}
-                        <span className={!isVisible || groupHidden ? 'line-through opacity-60' : ''}>{habit.name}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              ))}
-
-              {/* Ungrouped habits */}
-              {organizedData.ungrouped.length > 0 && (
-                <div className="flex items-center gap-2 flex-wrap">
-                  {organizedData.grouped.length > 0 && (
-                    <span className="text-xs text-zinc-600 px-2">Ungrouped</span>
-                  )}
-                  {organizedData.ungrouped.map((habit) => {
-                    const isVisible = visibleHabitIds.has(habit.id)
-                    return (
-                      <button
-                        key={habit.id}
-                        onClick={() => onToggleVisibility(habit.id)}
-                        className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors ${
-                          isVisible
-                            ? 'bg-zinc-900 text-zinc-300 hover:bg-zinc-800'
-                            : 'bg-zinc-900/50 text-zinc-500 hover:bg-zinc-900'
-                        }`}
-                      >
-                        {habit.emoji && (
-                          <span className={!isVisible ? 'opacity-40' : ''}>{habit.emoji}</span>
-                        )}
-                        <span className={!isVisible ? 'line-through opacity-60' : ''}>{habit.name}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-          )}
+          <HabitChipList
+            habits={habits}
+            groups={groups}
+            getIsSelected={getIsSelected}
+            getIsDisabled={getIsDisabled}
+            onSelect={onToggleVisibility}
+            onGroupSelect={onToggleGroupVisibility}
+            getIsGroupSelected={getIsGroupSelected}
+            showStrikethrough={true}
+            emptyMessage="No habits yet"
+            emptySubMessage=""
+          />
 
           {/* Quick actions */}
           {habits.length > 0 && (
             <div className="flex items-center justify-center gap-4 mt-6 pt-4 border-t border-zinc-800">
               <button
-                onClick={() => {
-                  // Show all
-                  habits.forEach(h => {
-                    if (!visibleHabitIds.has(h.id)) {
-                      onToggleVisibility(h.id)
-                    }
-                  })
-                  groups.forEach(g => {
-                    if (!g.visible) {
-                      onToggleGroupVisibility(g.id)
-                    }
-                  })
-                }}
+                onClick={handleShowAll}
                 className="text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
               >
                 Show all
               </button>
               <span className="text-zinc-700">·</span>
               <button
-                onClick={() => {
-                  // Hide all
-                  habits.forEach(h => {
-                    if (visibleHabitIds.has(h.id)) {
-                      onToggleVisibility(h.id)
-                    }
-                  })
-                }}
+                onClick={handleHideAll}
                 className="text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
               >
                 Hide all

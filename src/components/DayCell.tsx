@@ -38,8 +38,8 @@ export const DayCell = memo(function DayCell({
         ${isCurrentMonth ? '' : 'opacity-35'}
       `}
     >
-      {/* Top: Date number */}
-      <div className="w-full flex items-center justify-center mb-1">
+      {/* Top: Date number - fixed height for consistency */}
+      <div className="w-full h-7 flex items-center justify-center flex-shrink-0">
         <span
           className={`
             text-sm tabular-nums font-medium leading-none
@@ -56,25 +56,20 @@ export const DayCell = memo(function DayCell({
       </div>
 
       {/* Bottom: Dots flowing horizontally with wrap - responsive sizes */}
-      <div className="flex-1 w-full flex flex-wrap justify-center content-start gap-1 sm:gap-1.5 overflow-hidden">
+      <div className="flex-1 w-full flex flex-wrap justify-center content-start gap-1 sm:gap-1.5 overflow-hidden mt-1 sm:mt-1.5">
         {completedHabits.map(({ habit }) => {
           const color = habitDisplayColors.get(habit.id) || habit.color
-          return habit.emoji ? (
+          return (
             <div
               key={habit.id}
               className="w-5 h-5 sm:w-7 sm:h-7 rounded-full flex items-center justify-center flex-shrink-0"
-              style={{ backgroundColor: color + '40' }}
-              title={habit.name}
-            >
-              <span className="text-sm sm:text-lg leading-none">{habit.emoji}</span>
-            </div>
-          ) : (
-            <div
-              key={habit.id}
-              className="w-5 h-5 sm:w-7 sm:h-7 rounded-full flex-shrink-0"
               style={{ backgroundColor: color }}
               title={habit.name}
-            />
+            >
+              {habit.emoji && (
+                <span className="text-sm sm:text-lg leading-none" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}>{habit.emoji}</span>
+              )}
+            </div>
           )
         })}
       </div>
