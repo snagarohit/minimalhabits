@@ -295,22 +295,27 @@ export function DayView({
     // Store initial position for drag detection
     const { col, row } = slot
 
-    // Start potential drag selection (don't prevent default - allow clicks to work)
-    gridRef.current?.setPointerCapture(e.pointerId)
+    // Start potential drag selection - DON'T capture pointer yet (let clicks work)
+    // Pointer capture will happen in handlePointerMove when actual drag detected
     setDragStart({ col, row })
     setDragEnd({ col, row })
   }, [getSlotFromPointer])
 
   // Handle pointer move
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (!isDragging) return
+    if (!isDragging || !dragStart) return
 
     const slot = getSlotFromPointer(e)
     if (!slot) return
 
+    // Check if we've moved to a different slot - if so, capture pointer for dragging
+    if (slot.col !== dragStart.col || slot.row !== dragStart.row) {
+      gridRef.current?.setPointerCapture(e.pointerId)
+    }
+
     // Allow cross-column selection
     setDragEnd(slot)
-  }, [isDragging, getSlotFromPointer])
+  }, [isDragging, dragStart, getSlotFromPointer])
 
   // Handle pointer up - only process if user actually dragged (multi-slot selection)
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
@@ -432,32 +437,32 @@ export function DayView({
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex-shrink-0 border-b border-zinc-800 px-4 py-3">
+      <div className="flex-shrink-0 border-b border-zinc-800 px-3 py-1.5">
         <div className="flex items-center justify-between">
           <button
             onClick={goToPrevDay}
-            className="p-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors"
+            className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors"
           >
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
             </svg>
           </button>
 
-          <div className="text-center">
-            <button
-              onClick={goToToday}
-              className={`text-lg font-medium ${isToday ? 'text-zinc-100' : 'text-zinc-300 hover:text-zinc-100'}`}
-            >
-              {isToday ? 'Today' : format(date, 'EEEE')}
-            </button>
-            <p className="text-sm text-zinc-500">{format(date, 'MMMM d, yyyy')}</p>
-          </div>
+          <button
+            onClick={goToToday}
+            className="flex items-center gap-2 hover:bg-zinc-800/50 px-2 py-1 rounded-lg transition-colors"
+          >
+            <span className={`text-sm font-medium ${isToday ? 'text-zinc-100' : 'text-zinc-300'}`}>
+              {isToday ? 'Today' : format(date, 'EEE')}
+            </span>
+            <span className="text-xs text-zinc-500">{format(date, 'MMM d')}</span>
+          </button>
 
           <button
             onClick={goToNextDay}
-            className="p-2 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors"
+            className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors"
           >
-            <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
             </svg>
           </button>
@@ -695,6 +700,14 @@ export function DayView({
           {/* Branding */}
           <div className="flex items-center justify-center gap-1.5 text-[10px] text-zinc-600 mb-2">
             <span className="font-medium text-zinc-500">Minimal Habits</span>
+            <button
+              onClick={onOpenEditPanel}
+              className="text-zinc-500 hover:text-zinc-300 transition-colors"
+            >
+              <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+              </svg>
+            </button>
             <span>·</span>
             <span>Designed in <span className="text-zinc-500">Cupertino</span></span>
             <span>·</span>
