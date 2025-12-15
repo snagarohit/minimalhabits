@@ -64,7 +64,7 @@ interface UseGoogleAuthReturn {
   getAccessToken: () => string | null
 }
 
-const SCOPES = 'https://www.googleapis.com/auth/drive.appdata'
+const SCOPES = 'https://www.googleapis.com/auth/drive.appdata email profile'
 const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'
 const STORAGE_KEY = 'habit-google-auth'
 
