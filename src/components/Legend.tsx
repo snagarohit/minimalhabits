@@ -159,8 +159,6 @@ export function Legend({
             onGroupSelect={onToggleGroupVisibility}
             getIsGroupSelected={getIsGroupSelected}
             showStrikethrough={true}
-            emptyMessage="No habits yet"
-            emptySubMessage=""
           />
 
           {/* Quick actions */}

@@ -83,8 +83,6 @@ export function DayModal({
             groups={groups}
             getIsSelected={(habitId) => getCompletionValue(habitId, dateString) > 0}
             onSelect={handleToggle}
-            emptyMessage="No habits yet"
-            emptySubMessage="Create habits using the edit button"
           />
         </div>
       </div>

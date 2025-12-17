@@ -759,8 +759,6 @@ export function DayView({
             habits={habits}
             groups={groups}
             onSelect={handleSelectHabit}
-            emptyMessage="No habits yet"
-            emptySubMessage="Tap below to add your first habit"
             onAddHabit={() => {
               setShowHabitSelector(false)
               setPendingSelection(null)
@@ -782,8 +780,6 @@ export function DayView({
             habits={habits}
             groups={groups}
             onSelect={handleStartTimer}
-            emptyMessage="No habits yet"
-            emptySubMessage="Tap below to add your first habit"
             onAddHabit={() => {
               setShowTimerHabitSelector(false)
               onOpenEditPanel()
@@ -950,8 +946,6 @@ export function DayView({
                 setShowChangeHabit(false)
               }
             }}
-            emptyMessage="No habits yet"
-            emptySubMessage="Tap below to add your first habit"
             onAddHabit={() => {
               setShowChangeHabit(false)
               setEditingEntry(null)

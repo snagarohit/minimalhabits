@@ -9,8 +9,6 @@ interface HabitChipListProps {
   onSelect: (habitId: string) => void
   onGroupSelect?: (groupId: string) => void
   getIsGroupSelected?: (groupId: string) => boolean
-  emptyMessage?: string
-  emptySubMessage?: string
   showStrikethrough?: boolean // Show strikethrough on unselected items
   onAddHabit?: () => void // Optional callback to add a new habit
 }
@@ -23,8 +21,6 @@ export function HabitChipList({
   onSelect,
   onGroupSelect,
   getIsGroupSelected,
-  emptyMessage = 'No habits yet',
-  emptySubMessage = 'Use the edit button to add habits',
   showStrikethrough = false,
   onAddHabit,
 }: HabitChipListProps) {
@@ -42,15 +38,11 @@ export function HabitChipList({
 
   if (habits.length === 0) {
     return (
-      <div className="py-8 text-center">
-        <p className="text-zinc-500 text-sm">{emptyMessage}</p>
-        {emptySubMessage && (
-          <p className="text-zinc-600 text-xs mt-1">{emptySubMessage}</p>
-        )}
+      <div className="space-y-3">
         {onAddHabit && (
           <button
             onClick={onAddHabit}
-            className="mt-4 py-2.5 px-4 rounded-lg border border-dashed border-zinc-700 text-zinc-400 text-sm hover:border-zinc-600 hover:text-zinc-300 hover:bg-zinc-900/50 transition-colors inline-flex items-center gap-2"
+            className="w-full py-2.5 px-4 rounded-lg border border-dashed border-zinc-700 text-zinc-400 text-sm hover:border-zinc-600 hover:text-zinc-300 hover:bg-zinc-900/50 transition-colors flex items-center justify-center gap-2"
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
