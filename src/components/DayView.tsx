@@ -1,5 +1,5 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import { format, addDays, subDays } from 'date-fns'
+import { useState, useMemo, useEffect, useCallback, useRef, useLayoutEffect } from 'react'
+import { format } from 'date-fns'
 import { ResponsiveDialog } from './ResponsiveDialog'
 import { HabitChipList } from './HabitChipList'
 import type { Habit, HabitGroup, TimedEntry, HabitCompletion } from '../types'
@@ -11,13 +11,17 @@ interface DayViewProps {
   timedEntries: TimedEntry[]
   completions: HabitCompletion[]
   habitDisplayColors: Map<string, string>
-  onDateChange: (date: Date) => void
+  visibleHabitIds: Set<string>
+  onToggleVisibility: (habitId: string) => void
+  onToggleGroupVisibility: (groupId: string) => void
   onAddTimedEntry: (habitId: string, date: string, startTime: string, duration: number) => TimedEntry
   onUpdateTimedEntry: (id: string, updates: Partial<Omit<TimedEntry, 'id'>>) => void
   onDeleteTimedEntry: (id: string) => void
   onToggleCompletion: (habitId: string, date: string) => void
   onCelebrate: () => void
-  onOpenEditPanel: () => void
+  onOpenEditPanel: (mode?: 'list' | 'add-habit') => void
+  onCloseEditPanel: () => void
+  onShowAbout: () => void
 }
 
 // Grid configuration: 12 AM to 12 AM = 24 hours (3 columns of 8 hours each)
@@ -68,6 +72,19 @@ function formatElapsed(seconds: number): string {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
 }
 
+// Format duration in hours and minutes
+function formatDuration(minutes: number): string {
+  if (minutes < 60) {
+    return `${minutes} min`
+  }
+  const hours = Math.floor(minutes / 60)
+  const mins = minutes % 60
+  if (mins === 0) {
+    return `${hours} hr${hours > 1 ? 's' : ''}`
+  }
+  return `${hours} hr${hours > 1 ? 's' : ''} ${mins} min`
+}
+
 export function DayView({
   date,
   habits,
@@ -75,13 +92,17 @@ export function DayView({
   timedEntries,
   completions: _completions,
   habitDisplayColors,
-  onDateChange,
+  visibleHabitIds,
+  onToggleVisibility,
+  onToggleGroupVisibility,
   onAddTimedEntry,
   onUpdateTimedEntry,
   onDeleteTimedEntry,
   onToggleCompletion: _onToggleCompletion,
   onCelebrate,
   onOpenEditPanel,
+  onCloseEditPanel,
+  onShowAbout,
 }: DayViewProps) {
   const dateString = format(date, 'yyyy-MM-dd')
   const gridRef = useRef<HTMLDivElement>(null)
@@ -100,6 +121,10 @@ export function DayView({
     endRow: number
   } | null>(null)
 
+  // Track if we're waiting for a habit to be created (for auto-adding to pending selection)
+  const [waitingForHabit, setWaitingForHabit] = useState(false)
+  const prevHabitsCountRef = useRef(habits.length)
+
   // Timer state - supports multiple simultaneous timers
   const [activeTimers, setActiveTimers] = useState<Array<{
     id: string
@@ -111,6 +136,7 @@ export function DayView({
   }>>([])
   const [timerTick, setTimerTick] = useState(0) // Forces re-render for elapsed time
   const [showTimerHabitSelector, setShowTimerHabitSelector] = useState(false)
+  const [showVisibilityDialog, setShowVisibilityDialog] = useState(false)
 
   // Current time (updates every minute for slot highlighting, every second for timers)
   const [now, setNow] = useState(() => new Date())
@@ -128,16 +154,58 @@ export function DayView({
     return Math.floor((Date.now() - startTimestamp) / 1000)
   }, [timerTick]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Auto-create entry when a new habit is created while we're waiting
+  useLayoutEffect(() => {
+    // Check if a new habit was added while we were waiting
+    if (waitingForHabit && pendingSelection && habits.length > prevHabitsCountRef.current && habits.length > 0) {
+      // Get the most recently added habit (last in the array)
+      const newHabit = habits[habits.length - 1]
+
+      const { startCol, startRow, endCol, endRow } = pendingSelection
+      const { hour, minute } = slotToTime(startCol, startRow)
+
+      // Calculate total slots across columns
+      const startSlot = startCol * ROWS + startRow
+      const endSlot = endCol * ROWS + endRow
+      const totalSlots = endSlot - startSlot + 1
+      const duration = totalSlots * 15
+
+      onAddTimedEntry(newHabit.id, dateString, formatTimeString(hour, minute), duration)
+      onCelebrate()
+
+      // Close the EditPanel since we're done - entry is logged
+      onCloseEditPanel()
+
+      // Reset state
+      setWaitingForHabit(false)
+      setPendingSelection(null)
+    }
+
+    // Update ref for next comparison
+    prevHabitsCountRef.current = habits.length
+  }, [habits, waitingForHabit, pendingSelection, dateString, onAddTimedEntry, onCelebrate, onCloseEditPanel])
+
   const isToday = format(now, 'yyyy-MM-dd') === dateString
   const currentSlot = useMemo(() => {
     if (!isToday) return null
     return timeToSlot(now.getHours(), now.getMinutes())
   }, [isToday, now])
 
-  // Get entries for this day
+  // Get entries for this day (filtered by visibility)
   const dayEntries = useMemo(() => {
-    return timedEntries.filter(e => e.date === dateString)
-  }, [timedEntries, dateString])
+    return timedEntries.filter(e => {
+      if (e.date !== dateString) return false
+      // Check if habit is visible
+      if (!visibleHabitIds.has(e.habitId)) return false
+      // Check if habit's group is visible
+      const habit = habits.find(h => h.id === e.habitId)
+      if (habit?.groupId) {
+        const group = groups.find(g => g.id === habit.groupId)
+        if (group && !group.visible) return false
+      }
+      return true
+    })
+  }, [timedEntries, dateString, visibleHabitIds, habits, groups])
 
   // Compute entry layout info for continuous block rendering
   // Each entry gets: column, startRow, rowSpan, and horizontal position based on overlaps
@@ -419,11 +487,6 @@ export function DayView({
     setActiveTimers(prev => prev.filter(t => t.id !== timerId))
   }, [activeTimers, getElapsedSeconds, dateString, onAddTimedEntry, onCelebrate])
 
-  // Navigation
-  const goToPrevDay = () => onDateChange(subDays(date, 1))
-  const goToNextDay = () => onDateChange(addDays(date, 1))
-  const goToToday = () => onDateChange(new Date())
-
   // Get timer info helpers
   const getTimerHabit = useCallback((timer: typeof activeTimers[0]) => {
     return habits.find(h => h.id === timer.habitId)
@@ -434,41 +497,67 @@ export function DayView({
     return habit ? (habitDisplayColors.get(habit.id) || habit.color) : '#666'
   }, [getTimerHabit, habitDisplayColors])
 
+  // Visibility helpers for filter dialog
+  const getIsSelected = useCallback((habitId: string) => {
+    return visibleHabitIds.has(habitId)
+  }, [visibleHabitIds])
+
+  const getIsDisabled = useCallback((habitId: string) => {
+    const habit = habits.find(h => h.id === habitId)
+    if (!habit?.groupId) return false
+    const group = groups.find(g => g.id === habit.groupId)
+    return group ? !group.visible : false
+  }, [habits, groups])
+
+  const getIsGroupSelected = useCallback((groupId: string) => {
+    const group = groups.find(g => g.id === groupId)
+    return group?.visible ?? false
+  }, [groups])
+
+  const handleShowAll = useCallback(() => {
+    habits.forEach(h => {
+      if (!visibleHabitIds.has(h.id)) {
+        onToggleVisibility(h.id)
+      }
+    })
+    groups.forEach(g => {
+      if (!g.visible) {
+        onToggleGroupVisibility(g.id)
+      }
+    })
+  }, [habits, groups, visibleHabitIds, onToggleVisibility, onToggleGroupVisibility])
+
+  const handleHideAll = useCallback(() => {
+    habits.forEach(h => {
+      if (visibleHabitIds.has(h.id)) {
+        onToggleVisibility(h.id)
+      }
+    })
+  }, [habits, visibleHabitIds, onToggleVisibility])
+
+  // Get visible habits for filter dialog
+  const visibleHabits = useMemo(() => {
+    return habits.filter((h) => {
+      if (!visibleHabitIds.has(h.id)) return false
+      if (h.groupId) {
+        const group = groups.find(g => g.id === h.groupId)
+        if (group && !group.visible) return false
+      }
+      return true
+    })
+  }, [habits, visibleHabitIds, groups])
+
+  // Get habits that have entries on this day (for legend display)
+  const habitsInView = useMemo(() => {
+    const habitIdsWithEntries = new Set(dayEntries.map(e => e.habitId))
+    return visibleHabits.filter(h => habitIdsWithEntries.has(h.id))
+  }, [dayEntries, visibleHabits])
+
+  const visibleCount = visibleHabits.length
+  const totalCount = habits.length
+
   return (
     <div className="flex h-full flex-col">
-      {/* Header */}
-      <div className="flex-shrink-0 border-b border-zinc-800 px-3 py-1.5">
-        <div className="flex items-center justify-between">
-          <button
-            onClick={goToPrevDay}
-            className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors"
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
-            </svg>
-          </button>
-
-          <button
-            onClick={goToToday}
-            className="flex items-center gap-2 hover:bg-zinc-800/50 px-2 py-1 rounded-lg transition-colors"
-          >
-            <span className={`text-sm font-medium ${isToday ? 'text-zinc-100' : 'text-zinc-300'}`}>
-              {isToday ? 'Today' : format(date, 'EEE')}
-            </span>
-            <span className="text-xs text-zinc-500">{format(date, 'MMM d')}</span>
-          </button>
-
-          <button
-            onClick={goToNextDay}
-            className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg transition-colors"
-          >
-            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
-            </svg>
-          </button>
-        </div>
-      </div>
-
       {/* Active timer bars - supports multiple */}
       {activeTimers.map(timer => {
         const habit = getTimerHabit(timer)
@@ -701,7 +790,7 @@ export function DayView({
           <div className="flex items-center justify-center gap-1.5 text-[10px] text-zinc-600 mb-2">
             <span className="font-medium text-zinc-500">Minimal Habits</span>
             <button
-              onClick={onOpenEditPanel}
+              onClick={onShowAbout}
               className="text-zinc-500 hover:text-zinc-300 transition-colors"
             >
               <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -714,33 +803,51 @@ export function DayView({
             <span className="text-zinc-500">Naga Samineni</span>
           </div>
 
-          {/* Legend - only habits that have entries today */}
+          {/* Legend with filter button */}
           <div className="flex-1 min-w-0">
-            {dayEntries.length > 0 ? (
-              <div className="flex flex-wrap gap-x-3 gap-y-1 justify-center">
-                {/* Get unique habits that have entries today */}
-                {Array.from(new Set(dayEntries.map(e => e.habitId))).map((habitId) => {
-                  const habit = habits.find(h => h.id === habitId)
-                  if (!habit) return null
-                  const color = habitDisplayColors.get(habit.id) || habit.color
-                  return (
-                    <div key={habit.id} className="flex items-center gap-1.5">
-                      <div
-                        className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
-                        style={{ backgroundColor: color }}
-                      >
-                        {habit.emoji && (
-                          <span className="text-xs leading-none" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}>{habit.emoji}</span>
-                        )}
-                      </div>
-                      <span className="text-xs text-zinc-400">{habit.name}</span>
-                    </div>
-                  )
-                })}
-              </div>
-            ) : (
-              <div className="text-center text-xs text-zinc-600">No entries today</div>
-            )}
+            <div className="flex items-center gap-2">
+              {/* Center: Habit legend (clickable to open filter) - shows only habits with entries today */}
+              <button
+                onClick={() => setShowVisibilityDialog(true)}
+                className="flex-1 min-w-0 cursor-pointer hover:opacity-80 transition-opacity"
+              >
+                {habitsInView.length > 0 ? (
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 justify-center">
+                    {habitsInView.map((habit) => {
+                      const displayColor = habitDisplayColors.get(habit.id) || habit.color
+                      return (
+                        <div key={habit.id} className="flex items-center gap-1.5">
+                          <div
+                            className="w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0"
+                            style={{ backgroundColor: displayColor }}
+                          >
+                            {habit.emoji && (
+                              <span className="text-xs leading-none" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}>{habit.emoji}</span>
+                            )}
+                          </div>
+                          <span className="text-xs text-zinc-400">{habit.name}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : habits.length > 0 ? (
+                  <div className="text-center text-xs text-zinc-600">No entries today</div>
+                ) : null}
+              </button>
+
+              {/* Right: Filter button */}
+              {habits.length > 0 && (
+                <button
+                  onClick={() => setShowVisibilityDialog(true)}
+                  className="flex h-7 w-7 items-center justify-center rounded-lg border border-zinc-700 transition-colors flex-shrink-0 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+                  title="Show / Hide"
+                >
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 3c2.755 0 5.455.232 8.083.678.533.09.917.556.917 1.096v1.044a2.25 2.25 0 01-.659 1.591l-5.432 5.432a2.25 2.25 0 00-.659 1.591v2.927a2.25 2.25 0 01-1.244 2.013L9.75 21v-6.568a2.25 2.25 0 00-.659-1.591L3.659 7.409A2.25 2.25 0 013 5.818V4.774c0-.54.384-1.006.917-1.096A48.32 48.32 0 0112 3z" />
+                  </svg>
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -751,8 +858,9 @@ export function DayView({
         onClose={() => {
           setShowHabitSelector(false)
           setPendingSelection(null)
+          setWaitingForHabit(false)
         }}
-        title={pendingSelection ? `Log ${(toAbsoluteSlot(pendingSelection.endCol, pendingSelection.endRow) - toAbsoluteSlot(pendingSelection.startCol, pendingSelection.startRow) + 1) * 15} min` : 'Select Habit'}
+        title={pendingSelection ? `Log ${formatDuration((toAbsoluteSlot(pendingSelection.endCol, pendingSelection.endRow) - toAbsoluteSlot(pendingSelection.startCol, pendingSelection.startRow) + 1) * 15)}` : 'Select Habit'}
       >
         <div className="px-4 py-4">
           <HabitChipList
@@ -761,8 +869,9 @@ export function DayView({
             onSelect={handleSelectHabit}
             onAddHabit={() => {
               setShowHabitSelector(false)
-              setPendingSelection(null)
-              onOpenEditPanel()
+              // Keep pendingSelection and wait for habit to be created
+              setWaitingForHabit(true)
+              onOpenEditPanel('add-habit')
             }}
           />
         </div>
@@ -775,14 +884,16 @@ export function DayView({
         title="Start Timer"
       >
         <div className="px-4 py-4">
-          <p className="text-xs text-zinc-500 mb-3">Select a habit to start tracking time</p>
+          {habits.length > 0 && (
+            <p className="text-xs text-zinc-500 mb-3">Select a habit to start tracking time</p>
+          )}
           <HabitChipList
             habits={habits}
             groups={groups}
             onSelect={handleStartTimer}
             onAddHabit={() => {
               setShowTimerHabitSelector(false)
-              onOpenEditPanel()
+              onOpenEditPanel('add-habit')
             }}
           />
         </div>
@@ -901,7 +1012,7 @@ export function DayView({
 
                 {/* Duration display */}
                 <div className="text-center text-xs text-zinc-500 mb-4 py-2 bg-zinc-800/50 rounded-lg">
-                  {entry.duration} minutes
+                  {formatDuration(entry.duration)}
                 </div>
 
                 {/* Actions */}
@@ -949,9 +1060,53 @@ export function DayView({
             onAddHabit={() => {
               setShowChangeHabit(false)
               setEditingEntry(null)
-              onOpenEditPanel()
+              onOpenEditPanel('add-habit')
             }}
           />
+        </div>
+      </ResponsiveDialog>
+
+      {/* Visibility Dialog */}
+      <ResponsiveDialog
+        isOpen={showVisibilityDialog}
+        onClose={() => setShowVisibilityDialog(false)}
+        title="Show / Hide"
+      >
+        <div className="px-4 py-4">
+          {/* Count indicator */}
+          <div className="text-xs text-zinc-500 mb-4">
+            Showing {visibleCount} of {totalCount} habits
+          </div>
+
+          <HabitChipList
+            habits={habits}
+            groups={groups}
+            getIsSelected={getIsSelected}
+            getIsDisabled={getIsDisabled}
+            onSelect={onToggleVisibility}
+            onGroupSelect={onToggleGroupVisibility}
+            getIsGroupSelected={getIsGroupSelected}
+            showStrikethrough={true}
+          />
+
+          {/* Quick actions */}
+          {habits.length > 0 && (
+            <div className="flex items-center justify-center gap-4 mt-6 pt-4 border-t border-zinc-800">
+              <button
+                onClick={handleShowAll}
+                className="text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+              >
+                Show all
+              </button>
+              <span className="text-zinc-700">·</span>
+              <button
+                onClick={handleHideAll}
+                className="text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+              >
+                Hide all
+              </button>
+            </div>
+          )}
         </div>
       </ResponsiveDialog>
     </div>

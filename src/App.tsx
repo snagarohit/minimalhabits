@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from 'react'
-import { format } from 'date-fns'
+import { format, addDays, subDays, addWeeks, subWeeks, addMonths, subMonths, startOfWeek, endOfWeek, eachDayOfInterval } from 'date-fns'
 import { Calendar, ViewMode } from './components/Calendar'
 import { DayView } from './components/DayView'
 import { DayModal } from './components/DayModal'
@@ -66,6 +66,7 @@ function App() {
     getStreak,
     loadAllData,
     getAllData,
+    deleteAllData,
     addTimedEntry,
     updateTimedEntry,
     deleteTimedEntry,
@@ -96,6 +97,7 @@ function App() {
 
   const [modalDateString, setModalDateString] = useState<string | null>(null)
   const [showEditPanel, setShowEditPanel] = useState(false)
+  const [editPanelInitialMode, setEditPanelInitialMode] = useState<'list' | 'add-habit'>('list')
   const [showCloudDialog, setShowCloudDialog] = useState(false)
   const [showAnalyticsDialog, setShowAnalyticsDialog] = useState(false)
   const [showTerms, setShowTerms] = useState(false)
@@ -104,32 +106,76 @@ function App() {
   const [visibleHabitIds, setVisibleHabitIds] = useState<Set<string>>(new Set())
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const saved = localStorage.getItem('habit-calendar-view-mode')
+    // Migrate 'week' to 'month' since we removed week view
+    if (saved === 'week') return 'month'
     return (saved as ViewMode) || 'month'
   })
-  const [showViewMenu, setShowViewMenu] = useState(false)
-  const [dayViewDate, setDayViewDate] = useState(() => new Date())
+  const [currentDate, setCurrentDate] = useState(() => new Date())
+  const [displayMonth, setDisplayMonth] = useState(() => new Date()) // For header display (updates on scroll)
+  const [visibleDates, setVisibleDates] = useState<string[]>([]) // Dates currently visible in calendar scroll
+  const [navDirection, setNavDirection] = useState<'left' | 'right' | 'none'>('none')
+  const [navKey, setNavKey] = useState(0) // Used to trigger animation on date change
 
   // Persist view mode
   useEffect(() => {
     localStorage.setItem('habit-calendar-view-mode', viewMode)
   }, [viewMode])
 
-  // Close menus when clicking outside
-  useEffect(() => {
-    if (!showViewMenu) return
-    const handleClick = () => {
-      setShowViewMenu(false)
-    }
-    document.addEventListener('click', handleClick)
-    return () => document.removeEventListener('click', handleClick)
-  }, [showViewMenu])
+  // Navigation helpers
 
-  const viewModeLabels: Record<ViewMode, string> = {
-    day: 'Day',
-    month: 'Month',
-    week: 'Week',
-    workweek: 'Work Week',
-  }
+  const goToPrev = useCallback(() => {
+    setNavDirection('left')
+    setNavKey(k => k + 1)
+    if (viewMode === 'day') {
+      setCurrentDate(d => subDays(d, 1))
+      setDisplayMonth(d => subDays(d, 1))
+    } else if (viewMode === 'month') {
+      setCurrentDate(d => subMonths(d, 1))
+      setDisplayMonth(d => subMonths(d, 1))
+    } else {
+      setCurrentDate(d => subWeeks(d, 1))
+      setDisplayMonth(d => subWeeks(d, 1))
+    }
+  }, [viewMode])
+
+  const goToNext = useCallback(() => {
+    setNavDirection('right')
+    setNavKey(k => k + 1)
+    if (viewMode === 'day') {
+      setCurrentDate(d => addDays(d, 1))
+      setDisplayMonth(d => addDays(d, 1))
+    } else if (viewMode === 'month') {
+      setCurrentDate(d => addMonths(d, 1))
+      setDisplayMonth(d => addMonths(d, 1))
+    } else {
+      setCurrentDate(d => addWeeks(d, 1))
+      setDisplayMonth(d => addWeeks(d, 1))
+    }
+  }, [viewMode])
+
+  const goToToday = useCallback(() => {
+    setNavDirection('none')
+    setNavKey(k => k + 1)
+    setCurrentDate(new Date())
+    setDisplayMonth(new Date())
+  }, [])
+
+  // Format header label based on view mode
+  const headerLabel = useMemo(() => {
+    if (viewMode === 'day') {
+      // Always show day name, even for today (consistent styling)
+      return format(currentDate, 'EEE')
+    }
+    // For month view, use displayMonth (which updates on scroll)
+    return format(displayMonth, 'MMMM yyyy')
+  }, [viewMode, currentDate, displayMonth])
+
+  const headerSubLabel = useMemo(() => {
+    if (viewMode === 'day') {
+      return format(currentDate, 'MMM d')
+    }
+    return null
+  }, [viewMode, currentDate])
 
   // Initialize visibility when habits load - all visible by default
   useEffect(() => {
@@ -192,7 +238,7 @@ function App() {
   const handleDayClick = useCallback((dateString: string) => {
     // Switch to Day View and navigate to the clicked date
     const [year, month, day] = dateString.split('-').map(Number)
-    setDayViewDate(new Date(year, month - 1, day))
+    setCurrentDate(new Date(year, month - 1, day))
     setViewMode('day')
   }, [])
 
@@ -213,6 +259,51 @@ function App() {
       return true
     })
   }, [habits, visibleHabitIds, groups])
+
+  // Compute which habits have completions in the current view
+  const habitsWithDataInView = useMemo(() => {
+    // Find which visible habits have completions in visible dates
+    const habitIdsWithData = new Set<string>()
+
+    if (viewMode === 'day') {
+      // Day view: check only current date
+      const dateString = format(currentDate, 'yyyy-MM-dd')
+      for (const habit of visibleHabits) {
+        const value = getCompletionValue(habit.id, dateString)
+        if (value > 0) {
+          habitIdsWithData.add(habit.id)
+        }
+      }
+    } else if (viewMode === 'workweek') {
+      // Workweek view: check week dates
+      const weekStart = startOfWeek(currentDate, { weekStartsOn: 0 })
+      const weekEnd = endOfWeek(currentDate, { weekStartsOn: 0 })
+      const dates = eachDayOfInterval({ start: weekStart, end: weekEnd })
+      for (const date of dates) {
+        const dateString = format(date, 'yyyy-MM-dd')
+        for (const habit of visibleHabits) {
+          if (habitIdsWithData.has(habit.id)) continue
+          const value = getCompletionValue(habit.id, dateString)
+          if (value > 0) {
+            habitIdsWithData.add(habit.id)
+          }
+        }
+      }
+    } else {
+      // Month view: use visible dates from scroll position
+      for (const dateString of visibleDates) {
+        for (const habit of visibleHabits) {
+          if (habitIdsWithData.has(habit.id)) continue
+          const value = getCompletionValue(habit.id, dateString)
+          if (value > 0) {
+            habitIdsWithData.add(habit.id)
+          }
+        }
+      }
+    }
+
+    return visibleHabits.filter(h => habitIdsWithData.has(h.id))
+  }, [viewMode, currentDate, visibleDates, visibleHabits, getCompletionValue])
 
   // Compute display colors for visible habits
   // Uses max-spread algorithm to ensure maximum visual contrast
@@ -301,136 +392,147 @@ function App() {
       {/* Desktop: centered container, Mobile: full width */}
       <div className="mx-auto max-w-3xl h-screen-safe flex flex-col">
         {/* Header */}
-        <header className="flex-shrink-0 border-b border-zinc-800 px-4 py-3 sm:px-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-lg font-semibold text-zinc-100">Minimal Habits</h1>
-              <p className="text-xs text-zinc-500">{format(new Date(), 'MMMM yyyy')}</p>
-            </div>
-            <div className="flex items-center gap-1">
-              {/* View mode dropdown */}
-              <div className="relative">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setShowViewMenu(!showViewMenu)
-                  }}
-                  className="flex h-9 items-center gap-1.5 rounded-lg px-2.5 bg-zinc-800/50 text-zinc-100 hover:bg-zinc-800 transition-colors"
-                  title={`View: ${viewModeLabels[viewMode]}`}
-                >
-                  {viewMode === 'day' ? (
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  ) : (
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
-                    </svg>
-                  )}
-                  <span className="text-xs font-medium">{viewModeLabels[viewMode]}</span>
-                  <svg className="h-3 w-3 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                  </svg>
-                </button>
-                {showViewMenu && (
-                  <div className="absolute right-0 top-full mt-1 z-50 min-w-[140px] rounded-lg border border-zinc-800 bg-zinc-900 py-1 shadow-xl">
-                    {(['day', 'month', 'week', 'workweek'] as ViewMode[]).map((mode) => (
-                      <button
-                        key={mode}
-                        onClick={() => {
-                          setViewMode(mode)
-                          setShowViewMenu(false)
-                        }}
-                        className={`w-full px-3 py-2 text-left text-sm transition-colors hover:bg-zinc-800 flex items-center gap-2 ${
-                          viewMode === mode ? 'text-zinc-100' : 'text-zinc-400'
-                        }`}
-                      >
-                        {mode === 'day' ? (
-                          <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                        ) : (
-                          <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5" />
-                          </svg>
-                        )}
-                        <span className="flex-1">{viewModeLabels[mode]}</span>
-                        {viewMode === mode && (
-                          <svg className="h-4 w-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                          </svg>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* Edit button */}
-              <button
-                onClick={() => setShowEditPanel(true)}
-                className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:text-zinc-100 hover:bg-zinc-800"
-                title="Edit habits"
-              >
-                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
-                </svg>
-              </button>
-
-              {/* Analytics button - coming soon */}
+        <header className="flex-shrink-0 border-b border-zinc-800 px-3 py-2">
+          {/* Row 1: Title + Action buttons */}
+          <div className="flex items-center justify-between mb-2">
+            <h1 className="text-base font-semibold text-zinc-100">Minimal Habits</h1>
+            <div className="flex items-center">
+              {/* Analytics button */}
               <button
                 onClick={() => setShowAnalyticsDialog(true)}
-                className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-400 transition-colors hover:text-zinc-100 hover:bg-zinc-800"
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-zinc-700 text-zinc-400 transition-colors hover:text-zinc-100 hover:bg-zinc-800"
                 title="Analytics"
               >
-                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z" />
                 </svg>
               </button>
 
-              {/* Cloud sync button */}
+              {/* Edit button */}
+              <button
+                onClick={() => setShowEditPanel(true)}
+                className="flex h-8 w-8 items-center justify-center rounded-lg border border-zinc-700 text-zinc-400 transition-colors hover:text-zinc-100 hover:bg-zinc-800 ml-1"
+                title="Edit habits"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931z" />
+                </svg>
+              </button>
+
+              {/* Profile button (opens cloud/settings) */}
               <button
                 onClick={() => setShowCloudDialog(true)}
-                className={`flex h-9 w-9 items-center justify-center rounded-lg transition-colors hover:bg-zinc-800 ${
-                  isSignedIn
-                    ? syncStatus === 'synced' ? 'text-green-500' : syncStatus === 'error' ? 'text-red-500' : 'text-zinc-400'
-                    : 'text-zinc-500'
+                className={`flex h-8 w-8 items-center justify-center rounded-lg border border-zinc-700 transition-colors hover:bg-zinc-800 ml-1 ${
+                  isSignedIn ? 'text-zinc-100' : 'text-zinc-500'
                 }`}
-                title={isSignedIn ? (syncStatus === 'synced' ? 'Synced to Google Drive' : syncStatus === 'syncing' ? 'Syncing...' : 'Sync error') : 'Cloud backup'}
+                title={isSignedIn ? user?.name || 'Profile' : 'Sign in'}
               >
-                {syncStatus === 'syncing' ? (
-                  <svg className="h-5 w-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
+                {isSignedIn && user?.picture ? (
+                  <img src={user.picture} alt="" className="h-5 w-5 rounded-full" />
                 ) : (
-                  <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 15a4.5 4.5 0 004.5 4.5H18a3.75 3.75 0 001.332-7.257 3 3 0 00-3.758-3.848 5.25 5.25 0 00-10.233 2.33A4.502 4.502 0 002.25 15z" />
+                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
                   </svg>
                 )}
               </button>
 
             </div>
           </div>
+
+          {/* Row 2: Jump button | Navigation | View selector */}
+          <div className="flex items-center justify-between">
+            {/* Left: Jump to today (always visible, consistent) */}
+            <button
+              onClick={goToToday}
+              className="px-2 py-1 text-xs font-medium rounded-lg border border-zinc-700 transition-colors text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+            >
+              Today
+            </button>
+
+            {/* Center: Navigation arrows + Date */}
+            <div className="flex items-center gap-1">
+              <button
+                onClick={goToPrev}
+                className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg border border-zinc-700 transition-colors"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
+                </svg>
+              </button>
+
+              <div className="flex items-center gap-1.5 min-w-0 px-1">
+                <span className="text-sm font-medium text-zinc-100 truncate">
+                  {headerLabel}
+                </span>
+                {headerSubLabel && (
+                  <span className="text-xs text-zinc-500">{headerSubLabel}</span>
+                )}
+              </div>
+
+              <button
+                onClick={goToNext}
+                className="p-1.5 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded-lg border border-zinc-700 transition-colors"
+              >
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 4.5l7.5 7.5-7.5 7.5" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Right: View mode tabs */}
+            <div className="flex items-center bg-zinc-900 rounded-lg p-0.5 border border-zinc-700">
+              {(['day', 'month'] as ViewMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  onClick={() => setViewMode(mode)}
+                  className={`px-2 py-1 text-xs font-medium rounded-md transition-colors ${
+                    viewMode === mode
+                      ? 'bg-zinc-700 text-zinc-100'
+                      : 'text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  {mode === 'day' ? 'Day' : 'Month'}
+                </button>
+              ))}
+            </div>
+          </div>
         </header>
 
         {/* Main view (on top, takes most space) */}
-        <div className="min-h-0 flex-1">
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <div
+            key={`${viewMode}-${navKey}`}
+            className={`h-full ${
+              navDirection === 'left' ? 'animate-slide-right' :
+              navDirection === 'right' ? 'animate-slide-left' :
+              'animate-fade-in'
+            }`}
+          >
           {viewMode === 'day' ? (
             <DayView
-              date={dayViewDate}
+              date={currentDate}
               habits={habits}
               groups={groups}
               timedEntries={timedEntries}
               completions={getAllData().completions}
               habitDisplayColors={habitDisplayColors}
-              onDateChange={setDayViewDate}
+              visibleHabitIds={visibleHabitIds}
+              onToggleVisibility={handleToggleVisibility}
+              onToggleGroupVisibility={handleToggleGroupVisibility}
               onAddTimedEntry={addTimedEntry}
               onUpdateTimedEntry={updateTimedEntry}
               onDeleteTimedEntry={deleteTimedEntry}
               onToggleCompletion={toggleBinary}
               onCelebrate={celebrate}
-              onOpenEditPanel={() => setShowEditPanel(true)}
+              onOpenEditPanel={(mode) => {
+                setEditPanelInitialMode(mode || 'list')
+                setShowEditPanel(true)
+              }}
+              onCloseEditPanel={() => {
+                setShowEditPanel(false)
+                setEditPanelInitialMode('list')
+              }}
+              onShowAbout={() => setShowAbout(true)}
             />
           ) : (
             <Calendar
@@ -438,21 +540,47 @@ function App() {
               habitDisplayColors={habitDisplayColors}
               getCompletionValue={getCompletionValue}
               onDayClick={handleDayClick}
+              onVisibleDatesChange={setVisibleDates}
               viewMode={viewMode}
+              currentDate={currentDate}
             />
           )}
+          </div>
         </div>
 
-        {/* Legend - minimal visual key at bottom (hidden in day view) */}
+        {/* Footer branding + Legend (hidden in day view - it has its own) */}
         {viewMode !== 'day' && (
-          <Legend
-            habits={habits}
-            groups={groups}
-            visibleHabitIds={visibleHabitIds}
-            habitDisplayColors={habitDisplayColors}
-            onToggleVisibility={handleToggleVisibility}
-            onToggleGroupVisibility={handleToggleGroupVisibility}
-          />
+          <div className="flex-shrink-0 border-t border-zinc-800 bg-zinc-950">
+            <div className="px-4 py-2.5">
+              {/* Branding */}
+              <div className="flex items-center justify-center gap-1.5 text-[10px] text-zinc-600 mb-2">
+                <span className="font-medium text-zinc-500">Minimal Habits</span>
+                <button
+                  onClick={() => setShowAbout(true)}
+                  className="text-zinc-500 hover:text-zinc-300 transition-colors"
+                >
+                  <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+                  </svg>
+                </button>
+                <span>·</span>
+                <span>Designed in <span className="text-zinc-500">Cupertino</span></span>
+                <span>·</span>
+                <span className="text-zinc-500">Naga Samineni</span>
+              </div>
+
+              {/* Legend */}
+              <Legend
+                habits={habits}
+                groups={groups}
+                visibleHabitIds={visibleHabitIds}
+                habitDisplayColors={habitDisplayColors}
+                habitsInView={habitsWithDataInView}
+                onToggleVisibility={handleToggleVisibility}
+                onToggleGroupVisibility={handleToggleGroupVisibility}
+              />
+            </div>
+          </div>
         )}
 
       </div>
@@ -460,7 +588,10 @@ function App() {
       {/* Edit panel */}
       <EditPanel
         isOpen={showEditPanel}
-        onClose={() => setShowEditPanel(false)}
+        onClose={() => {
+          setShowEditPanel(false)
+          setEditPanelInitialMode('list')
+        }}
         habits={habits}
         groups={groups}
         getStreak={getStreak}
@@ -474,6 +605,7 @@ function App() {
         onAddGroup={addGroup}
         onDeleteGroup={deleteGroup}
         onUpdateGroup={(groupId, name) => updateGroup(groupId, { name })}
+        initialMode={editPanelInitialMode}
       />
 
       {modalDateString && (
@@ -499,6 +631,7 @@ function App() {
         onSignIn={signIn}
         onSignOut={signOut}
         onSyncNow={syncNow}
+        onDeleteAllData={deleteAllData}
       />
 
       {/* Analytics coming soon dialog */}

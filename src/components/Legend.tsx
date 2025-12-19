@@ -8,6 +8,7 @@ interface LegendProps {
   groups: HabitGroup[]
   visibleHabitIds: Set<string>
   habitDisplayColors: Map<string, string>
+  habitsInView: Habit[] // Habits with data in current view
   onToggleVisibility: (habitId: string) => void
   onToggleGroupVisibility: (groupId: string) => void
 }
@@ -17,12 +18,13 @@ export function Legend({
   groups,
   visibleHabitIds,
   habitDisplayColors,
+  habitsInView,
   onToggleVisibility,
   onToggleGroupVisibility,
 }: LegendProps) {
   const [showVisibilityDialog, setShowVisibilityDialog] = useState(false)
 
-  // Get visible habits for legend display
+  // Get visible habits for filter count (respecting visibility settings)
   const visibleHabits = useMemo(() => {
     return habits.filter((h) => {
       if (!visibleHabitIds.has(h.id)) return false
@@ -82,25 +84,17 @@ export function Legend({
 
   return (
     <>
-      <div className="flex-shrink-0 border-t border-zinc-800 bg-zinc-950">
-        {/* Main legend bar */}
-        <div className="px-4 py-2.5">
-          {/* Branding - above legend */}
-          <div className="flex items-center justify-center gap-1.5 text-[10px] text-zinc-600 mb-2">
-            <span className="font-medium text-zinc-500">Minimal Habits</span>
-            <span>·</span>
-            <span>Designed in <span className="text-zinc-500">Cupertino</span></span>
-            <span>·</span>
-            <span className="text-zinc-500">Naga Samineni</span>
-          </div>
-
-          {/* Habit legend with filter button on right */}
-          <div className="flex items-center gap-2">
-            {/* Center: Habit legend */}
-            <div className="flex-1 min-w-0">
-              {visibleHabits.length > 0 ? (
+      <div className="flex-1 min-w-0">
+        {/* Habit legend with filter button on right */}
+        <div className="flex items-center gap-2">
+            {/* Center: Habit legend (clickable to open filter) - shows only habits with data in view */}
+            <button
+              onClick={() => setShowVisibilityDialog(true)}
+              className="flex-1 min-w-0 cursor-pointer hover:opacity-80 transition-opacity"
+            >
+              {habitsInView.length > 0 ? (
                 <div className="flex flex-wrap gap-x-3 gap-y-1 justify-center">
-                  {visibleHabits.map((habit) => {
+                  {habitsInView.map((habit) => {
                     const displayColor = habitDisplayColors.get(habit.id) || habit.color
                     return (
                       <div key={habit.id} className="flex items-center gap-1.5">
@@ -118,15 +112,15 @@ export function Legend({
                   })}
                 </div>
               ) : habits.length > 0 ? (
-                <div className="text-center text-xs text-zinc-600">All habits hidden</div>
+                <div className="text-center text-xs text-zinc-600">No habits in view</div>
               ) : null}
-            </div>
+            </button>
 
             {/* Right: Filter button */}
             {habits.length > 0 && (
               <button
                 onClick={() => setShowVisibilityDialog(true)}
-                className="flex h-7 w-7 items-center justify-center rounded transition-colors flex-shrink-0 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
+                className="flex h-7 w-7 items-center justify-center rounded-lg border border-zinc-700 transition-colors flex-shrink-0 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
                 title="Show / Hide"
               >
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -135,7 +129,6 @@ export function Legend({
               </button>
             )}
           </div>
-        </div>
       </div>
 
       {/* Visibility Dialog */}

@@ -1,5 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
+import { EmojiPicker } from './EmojiPicker'
 import { ResponsiveDialog } from './ResponsiveDialog'
+import { UNGROUPED_GROUP_ID } from '../hooks/useHabits'
 import type { Habit, HabitGroup } from '../types'
 
 interface EditPanelProps {
@@ -23,6 +25,7 @@ interface EditPanelProps {
   onAddGroup: (name: string) => HabitGroup
   onDeleteGroup: (groupId: string) => void
   onUpdateGroup: (groupId: string, name: string) => void
+  initialMode?: 'list' | 'add-habit'
 }
 
 // Editing state for a habit
@@ -44,6 +47,7 @@ export function EditPanel({
   onAddGroup,
   onDeleteGroup,
   onUpdateGroup,
+  initialMode = 'list',
 }: EditPanelProps) {
   // Mode: 'list' | 'edit-habit' | 'edit-group' | 'add-habit'
   const [mode, setMode] = useState<'list' | 'edit-habit' | 'edit-group' | 'add-habit'>('list')
@@ -62,16 +66,17 @@ export function EditPanel({
 
   // New group creation (inline)
   const [showNewGroup, setShowNewGroup] = useState(false)
+
+  // Emoji picker state
+  const [showEmojiPicker, setShowEmojiPicker] = useState(false)
   const [newGroupName, setNewGroupName] = useState('')
 
-  // Organize habits by group (include empty groups so they can be edited)
-  const organizedData = useMemo(() => {
-    const ungrouped = habits.filter(h => !h.groupId)
-    const grouped = groups.map(group => ({
+  // Organize habits by group (all habits now belong to a group)
+  const groupedHabits = useMemo(() => {
+    return groups.map(group => ({
       group,
       habits: habits.filter(h => h.groupId === group.id)
     }))
-    return { ungrouped, grouped }
   }, [habits, groups])
 
   // Get the original habit for comparison
@@ -102,7 +107,7 @@ export function EditPanel({
     return false
   }, [mode, habitEdit, originalHabit, groupName, selectedGroupId, groups, showNewGroup, newGroupName])
 
-  // Reset when panel closes
+  // Reset when panel closes, set initial mode when opens
   useEffect(() => {
     if (!isOpen) {
       setMode('list')
@@ -110,8 +115,17 @@ export function EditPanel({
       setSelectedGroupId(null)
       setShowNewGroup(false)
       setNewGroupName('')
+    } else if (initialMode === 'add-habit') {
+      // Open directly in add-habit mode
+      setSelectedHabitId(null)
+      setHabitEdit({
+        name: '',
+        emoji: '',
+        groupId: UNGROUPED_GROUP_ID,
+      })
+      setMode('add-habit')
     }
-  }, [isOpen])
+  }, [isOpen, initialMode])
 
   const startEditingHabit = (habit: Habit) => {
     setSelectedHabitId(habit.id)
@@ -128,7 +142,7 @@ export function EditPanel({
     setHabitEdit({
       name: '',
       emoji: '',
-      groupId: undefined,
+      groupId: UNGROUPED_GROUP_ID,
     })
     setMode('add-habit')
   }
@@ -222,18 +236,13 @@ export function EditPanel({
         {/* Icon field */}
         <div className="relative">
           <label className="block text-xs text-zinc-500 mb-1.5 text-center">Emoji</label>
-          <input
-            type="text"
-            value={habitEdit.emoji}
-            onChange={(e) => {
-              const value = e.target.value
-              const match = value.match(/\p{Extended_Pictographic}/u)
-              setHabitEdit(prev => ({ ...prev, emoji: match ? match[0] : value.slice(0, 2) }))
-            }}
-            placeholder="?"
-            className="w-12 h-10 rounded-lg border border-zinc-800 bg-zinc-900 text-center text-lg text-zinc-100 placeholder-zinc-600 outline-none focus:border-zinc-600"
-            maxLength={2}
-          />
+          <button
+            type="button"
+            onClick={() => setShowEmojiPicker(true)}
+            className="w-12 h-10 rounded-lg border border-zinc-800 bg-zinc-900 text-center text-lg text-zinc-100 hover:border-zinc-600 transition-colors flex items-center justify-center"
+          >
+            {habitEdit.emoji || <span className="opacity-30">😊</span>}
+          </button>
           {habitEdit.emoji && (
             <button
               type="button"
@@ -288,17 +297,6 @@ export function EditPanel({
           </div>
         ) : (
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setHabitEdit(prev => ({ ...prev, groupId: undefined }))}
-              className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${
-                habitEdit.groupId === undefined
-                  ? 'border-zinc-600 bg-zinc-800 text-zinc-100'
-                  : 'border-zinc-800 text-zinc-500 hover:border-zinc-700'
-              }`}
-            >
-              None
-            </button>
             {groups.map((group) => (
               <button
                 key={group.id}
@@ -351,52 +349,48 @@ export function EditPanel({
               </div>
             ) : (
               <div className="space-y-2">
-                {/* Grouped habits */}
-                {organizedData.grouped.map(({ group, habits: groupHabits }) => (
+                {/* All habits organized by group */}
+                {groupedHabits.map(({ group, habits: groupHabits }) => (
                   <div key={group.id} className="flex items-center gap-2 flex-wrap">
-                    {/* Group button */}
-                    <button
-                      onClick={() => startEditingGroup(group)}
-                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
-                    >
-                      <svg className="h-3.5 w-3.5 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
-                      </svg>
-                      {group.name}
-                    </button>
+                    {/* Group label/button - "Ungrouped" is not editable */}
+                    {group.id === UNGROUPED_GROUP_ID ? (
+                      <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-zinc-800/50 text-zinc-400">
+                        <svg className="h-3.5 w-3.5 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+                        </svg>
+                        {group.name}
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => startEditingGroup(group)}
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors bg-zinc-800 text-zinc-200 hover:bg-zinc-700 group/btn"
+                      >
+                        <svg className="h-3.5 w-3.5 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+                        </svg>
+                        {group.name}
+                        <svg className="h-3 w-3 text-zinc-500 group-hover/btn:text-zinc-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
+                        </svg>
+                      </button>
+                    )}
 
                     {/* Habits in group */}
                     {groupHabits.map((habit) => (
                       <button
                         key={habit.id}
                         onClick={() => startEditingHabit(habit)}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
+                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors bg-zinc-900 text-zinc-300 hover:bg-zinc-800 group/btn"
                       >
                         {habit.emoji && <span style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}>{habit.emoji}</span>}
                         {habit.name}
+                        <svg className="h-3 w-3 text-zinc-600 group-hover/btn:text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
+                        </svg>
                       </button>
                     ))}
                   </div>
                 ))}
-
-                {/* Ungrouped habits */}
-                {organizedData.ungrouped.length > 0 && (
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {organizedData.grouped.length > 0 && (
-                      <span className="text-xs text-zinc-600 px-2">Ungrouped</span>
-                    )}
-                    {organizedData.ungrouped.map((habit) => (
-                      <button
-                        key={habit.id}
-                        onClick={() => startEditingHabit(habit)}
-                        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-colors bg-zinc-900 text-zinc-300 hover:bg-zinc-800"
-                      >
-                        {habit.emoji && <span style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.8))' }}>{habit.emoji}</span>}
-                        {habit.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
             )}
 
@@ -502,6 +496,17 @@ export function EditPanel({
           </div>
         )}
       </div>
+
+      {/* Emoji Picker Dialog */}
+      {showEmojiPicker && (
+        <EmojiPicker
+          onSelect={(emoji) => {
+            setHabitEdit(prev => ({ ...prev, emoji }))
+            setShowEmojiPicker(false)
+          }}
+          onClose={() => setShowEmojiPicker(false)}
+        />
+      )}
     </ResponsiveDialog>
   )
 }

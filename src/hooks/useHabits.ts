@@ -5,8 +5,22 @@ import { HABIT_COLORS } from '../types'
 
 const STORAGE_KEY = 'habit-calendar-data'
 
+// Special ID for the default "Ungrouped" group
+export const UNGROUPED_GROUP_ID = 'ungrouped'
+
 function generateId(): string {
   return Math.random().toString(36).substring(2, 9)
+}
+
+function ensureUngroupedGroup(groups: HabitGroup[]): HabitGroup[] {
+  const hasUngrouped = groups.some(g => g.id === UNGROUPED_GROUP_ID)
+  if (!hasUngrouped) {
+    return [
+      { id: UNGROUPED_GROUP_ID, name: 'Ungrouped', visible: true },
+      ...groups
+    ]
+  }
+  return groups
 }
 
 function loadFromStorage(): HabitData {
@@ -57,9 +71,14 @@ export function useHabits(options: UseHabitsOptions = {}) {
 
   useEffect(() => {
     const data = loadFromStorage()
-    setHabits(data.habits)
+    // Migrate habits without groupId to "Ungrouped"
+    const migratedHabits = data.habits.map(h =>
+      h.groupId ? h : { ...h, groupId: UNGROUPED_GROUP_ID }
+    )
+    setHabits(migratedHabits)
     setCompletions(data.completions)
-    setGroups(data.groups)
+    // Ensure "Ungrouped" group always exists
+    setGroups(ensureUngroupedGroup(data.groups))
     setTimedEntries(data.timedEntries || [])
     setIsLoaded(true)
   }, [])
@@ -74,9 +93,14 @@ export function useHabits(options: UseHabitsOptions = {}) {
 
   // Load all data from external source (for cloud sync)
   const loadAllData = useCallback((data: HabitData) => {
-    setHabits(data.habits)
+    // Migrate habits without groupId to "Ungrouped"
+    const migratedHabits = data.habits.map(h =>
+      h.groupId ? h : { ...h, groupId: UNGROUPED_GROUP_ID }
+    )
+    setHabits(migratedHabits)
     setCompletions(data.completions)
-    setGroups(data.groups)
+    // Ensure "Ungrouped" group always exists
+    setGroups(ensureUngroupedGroup(data.groups))
     setTimedEntries(data.timedEntries || [])
   }, [])
 
@@ -98,10 +122,13 @@ export function useHabits(options: UseHabitsOptions = {}) {
   }, [])
 
   const deleteGroup = useCallback((id: string) => {
+    // Prevent deletion of "Ungrouped" group
+    if (id === UNGROUPED_GROUP_ID) return
+
     setGroups((prev) => prev.filter((g) => g.id !== id))
-    // Remove groupId from habits in this group
+    // Move habits to "Ungrouped" group instead of removing groupId
     setHabits((prev) =>
-      prev.map((h) => (h.groupId === id ? { ...h, groupId: undefined } : h))
+      prev.map((h) => (h.groupId === id ? { ...h, groupId: UNGROUPED_GROUP_ID } : h))
     )
   }, [])
 
@@ -123,7 +150,8 @@ export function useHabits(options: UseHabitsOptions = {}) {
       name: options.name,
       color: availableColor,
       emoji: options.emoji,
-      groupId: options.groupId,
+      // Default to "Ungrouped" if no group specified
+      groupId: options.groupId || UNGROUPED_GROUP_ID,
       createdAt: new Date().toISOString(),
     }
 
@@ -140,6 +168,7 @@ export function useHabits(options: UseHabitsOptions = {}) {
   const deleteHabit = useCallback((id: string) => {
     setHabits((prev) => prev.filter((h) => h.id !== id))
     setCompletions((prev) => prev.filter((c) => c.habitId !== id))
+    setTimedEntries((prev) => prev.filter((e) => e.habitId !== id))
   }, [])
 
   // Completion management
@@ -218,7 +247,6 @@ export function useHabits(options: UseHabitsOptions = {}) {
   // Get visible habits (based on group visibility)
   const getVisibleHabits = useCallback(() => {
     return habits.filter((habit) => {
-      if (!habit.groupId) return true // Ungrouped habits always visible
       const group = groups.find((g) => g.id === habit.groupId)
       return group ? group.visible : true
     })
@@ -275,6 +303,14 @@ export function useHabits(options: UseHabitsOptions = {}) {
     [completions]
   )
 
+  // Delete all data (habits, completions, groups, timed entries)
+  const deleteAllData = useCallback(() => {
+    setHabits([])
+    setCompletions([])
+    setGroups([])
+    setTimedEntries([])
+  }, [])
+
   return {
     habits,
     completions,
@@ -295,6 +331,7 @@ export function useHabits(options: UseHabitsOptions = {}) {
     getVisibleHabits,
     loadAllData,
     getAllData,
+    deleteAllData,
     addTimedEntry,
     updateTimedEntry,
     deleteTimedEntry,
