@@ -85,6 +85,9 @@ function formatDuration(minutes: number): string {
   return `${hours} hr${hours > 1 ? 's' : ''} ${mins} min`
 }
 
+// Storage key for persisting active timers
+const TIMERS_STORAGE_KEY = 'habit-active-timers'
+
 export function DayView({
   date,
   habits,
@@ -125,7 +128,8 @@ export function DayView({
   const [waitingForHabit, setWaitingForHabit] = useState(false)
   const prevHabitsCountRef = useRef(habits.length)
 
-  // Timer state - supports multiple simultaneous timers
+  // Timer state - supports multiple simultaneous timers (persisted to localStorage)
+  const hasInitializedRef = useRef(false)
   const [activeTimers, setActiveTimers] = useState<Array<{
     id: string
     habitId: string
@@ -133,8 +137,55 @@ export function DayView({
     startTimestamp: number
     col: number
     row: number
-  }>>([])
+  }>>(() => {
+    // Initialize from localStorage
+    try {
+      const stored = localStorage.getItem(TIMERS_STORAGE_KEY)
+      if (stored) {
+        return JSON.parse(stored)
+      }
+    } catch (e) {
+      console.error('Failed to load timers from localStorage:', e)
+    }
+    return []
+  })
   const [timerTick, setTimerTick] = useState(0) // Forces re-render for elapsed time
+
+  // Persist timers to localStorage whenever they change (skip initial mount)
+  useEffect(() => {
+    if (!hasInitializedRef.current) {
+      hasInitializedRef.current = true
+      return
+    }
+    try {
+      if (activeTimers.length > 0) {
+        localStorage.setItem(TIMERS_STORAGE_KEY, JSON.stringify(activeTimers))
+      } else {
+        localStorage.removeItem(TIMERS_STORAGE_KEY)
+      }
+    } catch (e) {
+      console.error('Failed to save timers to localStorage:', e)
+    }
+  }, [activeTimers])
+
+  // Clean up timers when habits are deleted
+  const prevHabitsRef = useRef(habits)
+  useEffect(() => {
+    // Only run cleanup when habits actually change (not on mount)
+    const prevHabits = prevHabitsRef.current
+    prevHabitsRef.current = habits
+
+    // Skip if this is initial mount or habits haven't changed
+    if (prevHabits === habits || habits.length === 0) return
+
+    // Only clean up if a habit was removed
+    if (habits.length < prevHabits.length) {
+      setActiveTimers(prev => {
+        const validTimers = prev.filter(t => habits.some(h => h.id === t.habitId))
+        return validTimers.length !== prev.length ? validTimers : prev
+      })
+    }
+  }, [habits])
   const [showTimerHabitSelector, setShowTimerHabitSelector] = useState(false)
   const [showVisibilityDialog, setShowVisibilityDialog] = useState(false)
 
