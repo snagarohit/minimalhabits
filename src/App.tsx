@@ -306,24 +306,32 @@ function App() {
   }, [viewMode, currentDate, visibleDates, visibleHabits, getCompletionValue])
 
   // Compute display colors for visible habits
-  // Uses OKLab color space with greedy max-min distance selection
-  // This produces maximally distinguishable colors that are stable as habits are added
+  // Uses OKLCH color space with evenly-spaced hues for maximum distinguishability
   const habitDisplayColors = useMemo(() => {
     const colorMap = new Map<string, string>()
+    const n = visibleHabits.length
 
-    if (visibleHabits.length === 0) return colorMap
+    if (n === 0) return colorMap
 
-    // Linear RGB to sRGB
+    // Linear RGB to sRGB gamma correction
     const linearToSrgb = (c: number): number => {
       return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055
     }
 
-    // OKLab to sRGB (Björn Ottosson's perceptually uniform color space)
-    const oklabToRgb = (L: number, a: number, b: number): [number, number, number] => {
+    // OKLCH to sRGB (via OKLab)
+    // L: lightness (0-1), C: chroma (0-0.4), H: hue in degrees (0-360)
+    const oklchToRgb = (L: number, C: number, H: number): [number, number, number] => {
+      // Convert OKLCH to OKLab
+      const hRad = H * Math.PI / 180
+      const a = C * Math.cos(hRad)
+      const b = C * Math.sin(hRad)
+
+      // OKLab to linear RGB
       const l_ = L + 0.3963377774 * a + 0.2158037573 * b
       const m_ = L - 0.1055613458 * a - 0.0638541728 * b
       const s_ = L - 0.0894841775 * a - 1.2914855480 * b
       const l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_
+
       return [
         linearToSrgb(+4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
         linearToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
@@ -331,74 +339,41 @@ function App() {
       ]
     }
 
-    // Euclidean distance in OKLab (perceptually uniform)
-    const oklabDistance = (c1: [number, number, number], c2: [number, number, number]): number => {
-      const dL = c1[0] - c2[0], da = c1[1] - c2[1], db = c1[2] - c2[2]
-      return Math.sqrt(dL * dL + da * da + db * db)
-    }
-
-    // RGB to hex
+    // RGB to hex, clamping to valid gamut
     const rgbToHex = (r: number, g: number, b: number): string => {
       const toHex = (c: number) => Math.round(Math.max(0, Math.min(1, c)) * 255).toString(16).padStart(2, '0')
       return `#${toHex(r)}${toHex(g)}${toHex(b)}`
     }
 
-    // Generate candidate palette: sample colors in OKLab space
-    // Exclude low-saturation colors (grays) which are reserved for system UI
-    const candidates: Array<{ rgb: [number, number, number], oklab: [number, number, number] }> = []
-    const LIGHTNESS_MIN = 0.55, LIGHTNESS_MAX = 0.75 // Good for dark backgrounds
-    const CHROMA_MIN = 0.08 // Exclude grays (low chroma = gray)
-
-    for (let L = LIGHTNESS_MIN; L <= LIGHTNESS_MAX; L += 0.1) {
-      for (let a = -0.15; a <= 0.15; a += 0.03) {
-        for (let b = -0.15; b <= 0.15; b += 0.03) {
-          // Skip low-chroma (grayish) colors
-          const chroma = Math.sqrt(a * a + b * b)
-          if (chroma < CHROMA_MIN) continue
-
-          const rgb = oklabToRgb(L, a, b)
-          // Skip out-of-gamut colors
-          if (rgb.some(c => c < 0 || c > 1)) continue
-
-          candidates.push({ rgb, oklab: [L, a, b] })
+    // Find maximum in-gamut chroma for a given L and H
+    const maxChroma = (L: number, H: number): number => {
+      let lo = 0, hi = 0.4
+      while (hi - lo > 0.001) {
+        const mid = (lo + hi) / 2
+        const rgb = oklchToRgb(L, mid, H)
+        if (rgb.every(c => c >= 0 && c <= 1)) {
+          lo = mid
+        } else {
+          hi = mid
         }
       }
+      return lo
     }
 
-    // Greedy selection: pick colors with maximum minimum distance from assigned colors
-    const assigned: Array<{ oklab: [number, number, number], hex: string }> = []
+    // Generate evenly-spaced hues for N habits
+    // Use consistent lightness and high chroma for vivid, distinguishable colors
+    const LIGHTNESS = 0.7 // Good visibility on dark backgrounds
+    const CHROMA_RATIO = 0.85 // Use 85% of max chroma for safety margin
 
-    visibleHabits.forEach((habit) => {
-      let bestCandidate = candidates[0]
-      let bestScore = -1
+    visibleHabits.forEach((habit, i) => {
+      // Evenly space hues, starting at red (0°)
+      const hue = (i * 360 / n) % 360
 
-      if (assigned.length === 0) {
-        // First color: pick one with good chroma (vivid)
-        for (const c of candidates) {
-          const chroma = Math.sqrt(c.oklab[1] ** 2 + c.oklab[2] ** 2)
-          if (chroma > bestScore) {
-            bestScore = chroma
-            bestCandidate = c
-          }
-        }
-      } else {
-        // Find candidate with maximum minimum distance from all assigned colors
-        for (const c of candidates) {
-          const minDist = Math.min(...assigned.map(a => oklabDistance(c.oklab, a.oklab)))
-          if (minDist > bestScore) {
-            bestScore = minDist
-            bestCandidate = c
-          }
-        }
-      }
+      // Find max chroma for this hue and use most of it
+      const C = maxChroma(LIGHTNESS, hue) * CHROMA_RATIO
+      const rgb = oklchToRgb(LIGHTNESS, C, hue)
 
-      const hex = rgbToHex(...bestCandidate.rgb)
-      colorMap.set(habit.id, hex)
-      assigned.push({ oklab: bestCandidate.oklab, hex })
-
-      // Remove used candidate to avoid repeats
-      const idx = candidates.indexOf(bestCandidate)
-      if (idx > -1) candidates.splice(idx, 1)
+      colorMap.set(habit.id, rgbToHex(...rgb))
     })
 
     return colorMap
