@@ -51,20 +51,3 @@ export interface DayData {
   month: number
   year: number
 }
-
-// High-contrast, easily distinguishable colors for legend/calendar display
-// These are dynamically assigned to visible habits for optimal contrast
-export const LEGEND_DISPLAY_COLORS = [
-  '#ef4444', // red
-  '#f97316', // orange
-  '#eab308', // yellow
-  '#22c55e', // green
-  '#14b8a6', // teal
-  '#06b6d4', // cyan
-  '#3b82f6', // blue
-  '#8b5cf6', // violet
-  '#ec4899', // pink
-  '#f43f5e', // rose
-  '#84cc16', // lime
-  '#a855f7', // purple
-] as const

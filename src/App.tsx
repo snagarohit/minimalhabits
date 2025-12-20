@@ -15,7 +15,6 @@ import { useFeedback } from './hooks/useFeedback'
 import { useGoogleAuth } from './hooks/useGoogleAuth'
 import { useCloudSync } from './hooks/useCloudSync'
 import type { HabitData } from './types'
-import { LEGEND_DISPLAY_COLORS } from './types'
 
 // Check if user has accepted terms
 function hasAcceptedTerms(): boolean {
@@ -307,69 +306,35 @@ function App() {
   }, [viewMode, currentDate, visibleDates, visibleHabits, getCompletionValue])
 
   // Compute display colors for visible habits
-  // Uses max-spread algorithm to ensure maximum visual contrast
+  // Uses evenly-spaced hues around the color wheel for maximum perceptual contrast
   const habitDisplayColors = useMemo(() => {
     const colorMap = new Map<string, string>()
+    const n = visibleHabits.length
 
-    if (visibleHabits.length === 0) return colorMap
+    if (n === 0) return colorMap
 
-    // Convert hex to RGB for distance calculation
-    const hexToRgb = (hex: string) => {
-      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
-      return result ? {
-        r: parseInt(result[1], 16),
-        g: parseInt(result[2], 16),
-        b: parseInt(result[3], 16)
-      } : { r: 0, g: 0, b: 0 }
+    // Convert HSL to hex
+    const hslToHex = (h: number, s: number, l: number): string => {
+      s /= 100
+      l /= 100
+      const a = s * Math.min(l, 1 - l)
+      const f = (n: number) => {
+        const k = (n + h / 30) % 12
+        const color = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1)
+        return Math.round(255 * color).toString(16).padStart(2, '0')
+      }
+      return `#${f(0)}${f(8)}${f(4)}`
     }
 
-    // Perceptual color distance (weighted Euclidean - human eye is more sensitive to green)
-    const colorDistance = (c1: string, c2: string) => {
-      const rgb1 = hexToRgb(c1)
-      const rgb2 = hexToRgb(c2)
-      // Weighted RGB distance (approximates human perception)
-      const rMean = (rgb1.r + rgb2.r) / 2
-      const dR = rgb1.r - rgb2.r
-      const dG = rgb1.g - rgb2.g
-      const dB = rgb1.b - rgb2.b
-      return Math.sqrt(
-        (2 + rMean / 256) * dR * dR +
-        4 * dG * dG +
-        (2 + (255 - rMean) / 256) * dB * dB
-      )
-    }
+    // Generate evenly-spaced hues for N habits
+    // Start at 0° (red) and space evenly around the wheel
+    // Use high saturation and medium-high lightness for dark backgrounds
+    const saturation = 75
+    const lightness = 60
 
-    const palette = [...LEGEND_DISPLAY_COLORS]
-    const assignedColors: string[] = []
-
-    visibleHabits.forEach((habit) => {
-      if (palette.length === 0) {
-        // All colors used, restart palette
-        palette.push(...LEGEND_DISPLAY_COLORS)
-      }
-
-      let bestColor = palette[0]
-      let bestScore = -1
-
-      if (assignedColors.length === 0) {
-        // First color: pick first from palette
-        bestColor = palette[0]
-      } else {
-        // Find color with maximum minimum distance from assigned colors
-        for (const candidate of palette) {
-          const minDist = Math.min(...assignedColors.map(c => colorDistance(candidate, c)))
-          if (minDist > bestScore) {
-            bestScore = minDist
-            bestColor = candidate
-          }
-        }
-      }
-
-      // Assign and remove from available palette
-      colorMap.set(habit.id, bestColor)
-      assignedColors.push(bestColor)
-      const idx = palette.indexOf(bestColor)
-      if (idx > -1) palette.splice(idx, 1)
+    visibleHabits.forEach((habit, i) => {
+      const hue = (i * 360 / n) % 360
+      colorMap.set(habit.id, hslToHex(hue, saturation, lightness))
     })
 
     return colorMap
