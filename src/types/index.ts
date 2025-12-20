@@ -8,7 +8,7 @@ export interface Habit {
   id: string
   groupId?: string
   name: string
-  color: string
+  color?: string // deprecated - colors are now dynamically assigned based on visible habits
   emoji?: string // shows emoji instead of colored dot
   createdAt: string
 }
@@ -51,20 +51,6 @@ export interface DayData {
   month: number
   year: number
 }
-
-// High-contrast colors for habits (used when creating habits)
-export const HABIT_COLORS = [
-  '#6366f1', // indigo
-  '#8b5cf6', // violet
-  '#ec4899', // pink
-  '#f43f5e', // rose
-  '#f97316', // orange
-  '#eab308', // yellow
-  '#22c55e', // green
-  '#14b8a6', // teal
-  '#06b6d4', // cyan
-  '#3b82f6', // blue
-] as const
 
 // High-contrast, easily distinguishable colors for legend/calendar display
 // These are dynamically assigned to visible habits for optimal contrast

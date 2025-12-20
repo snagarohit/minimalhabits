@@ -105,7 +105,7 @@ export const DayCell = memo(function DayCell({
         className="flex-1 w-full flex flex-wrap justify-center content-start gap-1 sm:gap-1.5 overflow-hidden mt-1 sm:mt-1.5"
       >
         {visibleHabits.map(({ habit }) => {
-          const color = habitDisplayColors.get(habit.id) || habit.color
+          const color = habitDisplayColors.get(habit.id) || '#888'
           return (
             <div
               key={habit.id}

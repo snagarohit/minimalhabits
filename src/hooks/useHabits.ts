@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { format, subDays } from 'date-fns'
 import type { Habit, HabitCompletion, HabitData, HabitGroup, TimedEntry } from '../types'
-import { HABIT_COLORS } from '../types'
 
 const STORAGE_KEY = 'habit-calendar-data'
 
@@ -52,7 +51,6 @@ function saveToStorage(data: HabitData): void {
 export interface AddHabitOptions {
   name: string
   groupId?: string
-  color?: string
   emoji?: string
 }
 
@@ -140,15 +138,9 @@ export function useHabits(options: UseHabitsOptions = {}) {
 
   // Habit management
   const addHabit = useCallback((options: AddHabitOptions) => {
-    const usedColors = new Set(habits.map((h) => h.color))
-    const availableColor = options.color ||
-      HABIT_COLORS.find((c) => !usedColors.has(c)) ||
-      HABIT_COLORS[habits.length % HABIT_COLORS.length]
-
     const newHabit: Habit = {
       id: generateId(),
       name: options.name,
-      color: availableColor,
       emoji: options.emoji,
       // Default to "Ungrouped" if no group specified
       groupId: options.groupId || UNGROUPED_GROUP_ID,
@@ -157,7 +149,7 @@ export function useHabits(options: UseHabitsOptions = {}) {
 
     setHabits((prev) => [...prev, newHabit])
     return newHabit
-  }, [habits])
+  }, [])
 
   const updateHabit = useCallback((id: string, updates: Partial<Omit<Habit, 'id' | 'createdAt'>>) => {
     setHabits((prev) =>

@@ -444,7 +444,7 @@ function DayCellVertical({ day, completions, totalHabits: _totalHabits, habitDis
       {/* Dots flowing horizontally with wrap - responsive sizes */}
       <div className="flex-1 flex flex-wrap items-center gap-1.5 sm:gap-2 overflow-hidden">
         {visibleHabits.map(({ habit }) => {
-          const color = habitDisplayColors.get(habit.id) || habit.color
+          const color = habitDisplayColors.get(habit.id) || '#888'
           return (
             <div
               key={habit.id}

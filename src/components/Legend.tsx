@@ -95,7 +95,7 @@ export function Legend({
               {habitsInView.length > 0 ? (
                 <div className="flex flex-wrap gap-x-3 gap-y-1 justify-center">
                   {habitsInView.map((habit) => {
-                    const displayColor = habitDisplayColors.get(habit.id) || habit.color
+                    const displayColor = habitDisplayColors.get(habit.id) || '#888'
                     return (
                       <div key={habit.id} className="flex items-center gap-1.5">
                         <div

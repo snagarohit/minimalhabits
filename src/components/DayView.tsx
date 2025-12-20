@@ -545,7 +545,7 @@ export function DayView({
 
   const getTimerColor = useCallback((timer: typeof activeTimers[0]) => {
     const habit = getTimerHabit(timer)
-    return habit ? (habitDisplayColors.get(habit.id) || habit.color) : '#666'
+    return habit ? (habitDisplayColors.get(habit.id) || '#888') : '#666'
   }, [getTimerHabit, habitDisplayColors])
 
   // Visibility helpers for filter dialog
@@ -783,7 +783,7 @@ export function DayView({
                 .filter(layout => layout.col === col)
                 .map(({ entry, startRow, rowSpan, position, maxOverlap }) => {
                   const habit = habits.find(h => h.id === entry.habitId)
-                  const color = habit ? (habitDisplayColors.get(habit.id) || habit.color) : '#666'
+                  const color = habit ? (habitDisplayColors.get(habit.id) || '#888') : '#666'
 
                   // Calculate position as percentage of column
                   const topPercent = (startRow / ROWS) * 100
@@ -865,7 +865,7 @@ export function DayView({
                 {habitsInView.length > 0 ? (
                   <div className="flex flex-wrap gap-x-3 gap-y-1 justify-center">
                     {habitsInView.map((habit) => {
-                      const displayColor = habitDisplayColors.get(habit.id) || habit.color
+                      const displayColor = habitDisplayColors.get(habit.id) || '#888'
                       return (
                         <div key={habit.id} className="flex items-center gap-1.5">
                           <div
@@ -960,7 +960,7 @@ export function DayView({
           {(() => {
             const entry = dayEntries.find(e => e.id === editingEntry)
             const habit = entry ? habits.find(h => h.id === entry.habitId) : null
-            const color = habit ? (habitDisplayColors.get(habit.id) || habit.color) : '#666'
+            const color = habit ? (habitDisplayColors.get(habit.id) || '#888') : '#666'
 
             if (!entry || !habit) return null
 
