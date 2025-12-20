@@ -51,6 +51,7 @@ function App() {
 
   const {
     habits,
+    completions,
     groups,
     timedEntries,
     isLoaded,
@@ -91,7 +92,7 @@ function App() {
     if (isSignedIn && isLoaded) {
       saveToCloud(getAllData())
     }
-  }, [habits, groups, isSignedIn, isLoaded, saveToCloud, getAllData])
+  }, [habits, completions, groups, timedEntries, isSignedIn, isLoaded, saveToCloud, getAllData])
 
   const { celebrate } = useFeedback()
 

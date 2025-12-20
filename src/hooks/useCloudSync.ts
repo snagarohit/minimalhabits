@@ -165,11 +165,13 @@ function mergeData(local: HabitData, cloud: HabitData): HabitData {
   const mergedHabits = new Map<string, typeof local.habits[0]>()
   const mergedCompletions = new Map<string, typeof local.completions[0]>()
   const mergedGroups = new Map<string, typeof local.groups[0]>()
+  const mergedTimedEntries = new Map<string, NonNullable<typeof local.timedEntries>[0]>()
 
   // Add cloud data first (takes precedence)
   cloud.habits.forEach(h => mergedHabits.set(h.id, h))
   cloud.completions.forEach(c => mergedCompletions.set(`${c.habitId}-${c.date}`, c))
   cloud.groups.forEach(g => mergedGroups.set(g.id, g))
+  cloud.timedEntries?.forEach(e => mergedTimedEntries.set(e.id, e))
 
   // Add local data (only if not already in cloud)
   local.habits.forEach(h => {
@@ -188,10 +190,16 @@ function mergeData(local: HabitData, cloud: HabitData): HabitData {
       mergedGroups.set(g.id, g)
     }
   })
+  local.timedEntries?.forEach(e => {
+    if (!mergedTimedEntries.has(e.id)) {
+      mergedTimedEntries.set(e.id, e)
+    }
+  })
 
   return {
     habits: Array.from(mergedHabits.values()),
     completions: Array.from(mergedCompletions.values()),
     groups: Array.from(mergedGroups.values()),
+    timedEntries: Array.from(mergedTimedEntries.values()),
   }
 }
