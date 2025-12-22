@@ -30,3 +30,6 @@ dist-ssr
 
 # PWA
 dev-dist
+
+# Next.js
+.next

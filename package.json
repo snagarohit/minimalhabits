@@ -23,6 +23,7 @@
     "use-sound": "^4.0.3"
   },
   "devDependencies": {
+    "@netlify/plugin-nextjs": "^5.15.3",
     "@types/canvas-confetti": "^1.6.4",
     "@types/node": "^25.0.3",
     "@types/react": "^19.2.7",
