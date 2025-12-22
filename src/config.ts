@@ -1,5 +1,5 @@
 export const config = {
-  googleClientId: import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined,
+  googleClientId: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID as string | undefined,
 }
 
 export function isGoogleAuthEnabled(): boolean {

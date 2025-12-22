@@ -17,8 +17,9 @@ import { useCloudSync } from './hooks/useCloudSync'
 import { Toaster } from './components/ui/sonner'
 import type { HabitData } from './types'
 
-// Check if user has accepted terms
+// Check if user has accepted terms (SSR-safe)
 function hasAcceptedTerms(): boolean {
+  if (typeof window === 'undefined') return false
   try {
     const acceptance = localStorage.getItem('legal-acceptance')
     if (!acceptance) return false
@@ -38,7 +39,10 @@ function App() {
     isSignedIn,
     isLoading: isAuthLoading,
     user,
-    signIn,
+    accounts,
+    addAccount,
+    switchAccount,
+    removeAccount,
     signOut,
     getAccessToken,
     refreshToken,
@@ -55,6 +59,7 @@ function App() {
     completions,
     groups,
     timedEntries,
+    activeTimers,
     isLoaded,
     addHabit,
     updateHabit,
@@ -72,7 +77,10 @@ function App() {
     addTimedEntry,
     updateTimedEntry,
     deleteTimedEntry,
+    startTimer,
+    stopTimer,
   } = useHabits({
+    userId: user?.email, // Multi-user support: each user gets their own data
     onDataChange: handleCloudDataChange,
   })
 
@@ -94,7 +102,7 @@ function App() {
     if (isSignedIn && isLoaded) {
       saveToCloud(getAllData())
     }
-  }, [habits, completions, groups, timedEntries, isSignedIn, isLoaded, saveToCloud, getAllData])
+  }, [habits, completions, groups, timedEntries, activeTimers, isSignedIn, isLoaded, saveToCloud, getAllData])
 
   const { celebrate } = useFeedback()
 
@@ -108,6 +116,7 @@ function App() {
   const [showAbout, setShowAbout] = useState(false)
   const [visibleHabitIds, setVisibleHabitIds] = useState<Set<string>>(new Set())
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    if (typeof window === 'undefined') return 'month'
     const saved = localStorage.getItem('habit-calendar-view-mode')
     // Migrate 'week' to 'month' since we removed week view
     if (saved === 'week') return 'month'
@@ -268,6 +277,11 @@ function App() {
     // Find which visible habits have completions in visible dates
     const habitIdsWithData = new Set<string>()
 
+    // Include habits with active timers (they should always have a color)
+    for (const timer of activeTimers) {
+      habitIdsWithData.add(timer.habitId)
+    }
+
     if (viewMode === 'day') {
       // Day view: check only current date
       const dateString = format(currentDate, 'yyyy-MM-dd')
@@ -306,7 +320,7 @@ function App() {
     }
 
     return visibleHabits.filter(h => habitIdsWithData.has(h.id))
-  }, [viewMode, currentDate, visibleDates, visibleHabits, getCompletionValue])
+  }, [activeTimers, viewMode, currentDate, visibleDates, visibleHabits, getCompletionValue])
 
   // Compute display colors for habits shown in current view
   // Uses a curated palette for ≤10 habits, falls back to algorithmic for more
@@ -396,21 +410,24 @@ function App() {
                 </svg>
               </button>
 
-              {/* Profile button (opens cloud/settings) */}
+              {/* Profile button (opens account menu) */}
               <button
                 onClick={() => setShowCloudDialog(true)}
-                className={`flex h-8 w-8 items-center justify-center rounded-lg border border-zinc-700 transition-colors hover:bg-zinc-800 ml-1 ${
-                  isSignedIn ? 'text-zinc-100' : 'text-zinc-500'
-                }`}
+                className="flex items-center gap-1 h-8 px-2 rounded-lg border border-zinc-700 transition-colors hover:bg-zinc-800 ml-1"
                 title={isSignedIn ? user?.name || 'Profile' : 'Sign in'}
               >
                 {isSignedIn && user?.picture ? (
-                  <img src={user.picture} alt="" className="h-5 w-5 rounded-full" />
+                  <img src={user.picture} alt="" className="h-5 w-5 rounded-full" referrerPolicy="no-referrer" />
                 ) : (
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
-                  </svg>
+                  <div className="h-5 w-5 rounded-full bg-zinc-700 flex items-center justify-center">
+                    <svg className="h-3 w-3 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z" />
+                    </svg>
+                  </div>
                 )}
+                <svg className="h-3 w-3 text-zinc-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                </svg>
               </button>
 
             </div>
@@ -492,6 +509,7 @@ function App() {
               groups={groups}
               timedEntries={timedEntries}
               completions={getAllData().completions}
+              activeTimers={activeTimers}
               habitDisplayColors={habitDisplayColors}
               visibleHabitIds={visibleHabitIds}
               onToggleVisibility={handleToggleVisibility}
@@ -499,6 +517,8 @@ function App() {
               onAddTimedEntry={addTimedEntry}
               onUpdateTimedEntry={updateTimedEntry}
               onDeleteTimedEntry={deleteTimedEntry}
+              onStartTimer={startTimer}
+              onStopTimer={stopTimer}
               onToggleCompletion={toggleBinary}
               onCelebrate={celebrate}
               onOpenEditPanel={(mode) => {
@@ -604,8 +624,11 @@ function App() {
         isSignedIn={isSignedIn}
         isLoading={isAuthLoading}
         user={user}
+        accounts={accounts}
         syncStatus={syncStatus}
-        onSignIn={signIn}
+        onAddAccount={addAccount}
+        onSwitchAccount={switchAccount}
+        onRemoveAccount={removeAccount}
         onSignOut={signOut}
         onSyncNow={syncNow}
         onDeleteAllData={deleteAllData}

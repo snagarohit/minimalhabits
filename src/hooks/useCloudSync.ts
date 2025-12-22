@@ -73,10 +73,14 @@ export function useCloudSync({
         // For now, we'll use cloud data and merge any local-only items
         const currentLocalData = localDataRef.current
         const mergedData = mergeData(currentLocalData, cloudData)
-        onDataLoaded(mergedData)
 
-        // Save merged data back to cloud if different
-        if (JSON.stringify(mergedData) !== JSON.stringify(cloudData)) {
+        // Only update local data if merged is different from current local
+        if (!isDataEqual(mergedData, currentLocalData)) {
+          onDataLoaded(mergedData)
+        }
+
+        // Save merged data back to cloud only if different from cloud
+        if (!isDataEqual(mergedData, cloudData)) {
           await saveToGDrive(accessToken, mergedData, onTokenRefresh)
           toast.success(`${sourceLabel}: Synced & merged with cloud`, { id: 'cloud-sync' })
         } else {
@@ -205,18 +209,29 @@ export function useCloudSync({
 /**
  * Merge local and cloud data
  * Strategy: Include all items from both, preferring cloud versions for conflicts
+ * Active timers: Only one per habit (keep earliest startTimestamp)
+ * Timed entries: Merge by ID first, then overlapping entries will be merged by useHabits
  */
 function mergeData(local: HabitData, cloud: HabitData): HabitData {
   const mergedHabits = new Map<string, typeof local.habits[0]>()
   const mergedCompletions = new Map<string, typeof local.completions[0]>()
   const mergedGroups = new Map<string, typeof local.groups[0]>()
   const mergedTimedEntries = new Map<string, NonNullable<typeof local.timedEntries>[0]>()
+  // For active timers, key by habitId (only one timer per habit, keep earliest)
+  const mergedActiveTimers = new Map<string, NonNullable<typeof local.activeTimers>[0]>()
 
   // Add cloud data first (takes precedence)
   cloud.habits.forEach(h => mergedHabits.set(h.id, h))
   cloud.completions.forEach(c => mergedCompletions.set(`${c.habitId}-${c.date}`, c))
   cloud.groups.forEach(g => mergedGroups.set(g.id, g))
   cloud.timedEntries?.forEach(e => mergedTimedEntries.set(e.id, e))
+  // For timers: key by habitId, keep earliest
+  cloud.activeTimers?.forEach(t => {
+    const existing = mergedActiveTimers.get(t.habitId)
+    if (!existing || t.startTimestamp < existing.startTimestamp) {
+      mergedActiveTimers.set(t.habitId, t)
+    }
+  })
 
   // Add local data (only if not already in cloud)
   local.habits.forEach(h => {
@@ -240,11 +255,34 @@ function mergeData(local: HabitData, cloud: HabitData): HabitData {
       mergedTimedEntries.set(e.id, e)
     }
   })
+  // For timers: key by habitId, keep earliest
+  local.activeTimers?.forEach(t => {
+    const existing = mergedActiveTimers.get(t.habitId)
+    if (!existing || t.startTimestamp < existing.startTimestamp) {
+      mergedActiveTimers.set(t.habitId, t)
+    }
+  })
 
   return {
     habits: Array.from(mergedHabits.values()),
     completions: Array.from(mergedCompletions.values()),
     groups: Array.from(mergedGroups.values()),
     timedEntries: Array.from(mergedTimedEntries.values()),
+    activeTimers: Array.from(mergedActiveTimers.values()),
   }
+}
+
+/**
+ * Check if two HabitData objects are equivalent (for avoiding unnecessary syncs)
+ */
+function isDataEqual(a: HabitData, b: HabitData): boolean {
+  // Quick length checks first
+  if (a.habits.length !== b.habits.length) return false
+  if (a.completions.length !== b.completions.length) return false
+  if (a.groups.length !== b.groups.length) return false
+  if ((a.timedEntries?.length || 0) !== (b.timedEntries?.length || 0)) return false
+  if ((a.activeTimers?.length || 0) !== (b.activeTimers?.length || 0)) return false
+
+  // Deep comparison via JSON (simple but effective for our use case)
+  return JSON.stringify(a) === JSON.stringify(b)
 }

@@ -8,6 +8,7 @@ declare global {
       accounts: {
         oauth2: {
           initTokenClient: (config: TokenClientConfig) => TokenClient
+          initCodeClient: (config: CodeClientConfig) => CodeClient
           revoke?: (token: string, callback: () => void) => void
         }
       }
@@ -40,16 +41,42 @@ interface TokenResponse {
   error?: string
 }
 
+interface CodeClientConfig {
+  client_id: string
+  scope: string
+  ux_mode?: 'popup' | 'redirect'
+  callback: (response: CodeResponse) => void
+  error_callback?: (error: { type: string; message: string }) => void
+  // Required for refresh tokens
+  access_type?: 'offline' | 'online'
+  prompt?: 'none' | 'consent' | 'select_account'
+}
+
+interface CodeClient {
+  requestCode: () => void
+}
+
+interface CodeResponse {
+  code: string
+  error?: string
+}
+
 export interface GoogleUser {
   email: string
   name: string
   picture: string
 }
 
-interface StoredAuth {
+export interface Account {
   user: GoogleUser
   accessToken: string
+  refreshToken: string
   expiresAt: number
+}
+
+interface StoredAccounts {
+  accounts: Account[]
+  activeEmail: string | null
 }
 
 interface UseGoogleAuthReturn {
@@ -58,8 +85,11 @@ interface UseGoogleAuthReturn {
   isSignedIn: boolean
   isLoading: boolean
   user: GoogleUser | null
+  accounts: Account[]
   error: string | null
-  signIn: () => void
+  addAccount: () => void
+  switchAccount: (email: string) => void
+  removeAccount: (email: string) => void
   signOut: () => void
   getAccessToken: () => string | null
   refreshToken: () => Promise<string | null>
@@ -67,34 +97,57 @@ interface UseGoogleAuthReturn {
 
 const SCOPES = 'https://www.googleapis.com/auth/drive.appdata email profile'
 const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'
-const STORAGE_KEY = 'habit-google-auth'
+const STORAGE_KEY = 'habit-google-accounts'
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000 // Refresh 5 min before expiry
+
+function loadStoredAccounts(): StoredAccounts {
+  if (typeof window === 'undefined') {
+    return { accounts: [], activeEmail: null }
+  }
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored) {
+      return JSON.parse(stored)
+    }
+  } catch (e) {
+    console.error('Failed to load accounts:', e)
+  }
+  return { accounts: [], activeEmail: null }
+}
+
+function saveStoredAccounts(data: StoredAccounts): void {
+  if (typeof window === 'undefined') return
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+  } catch (e) {
+    console.error('Failed to save accounts:', e)
+  }
+}
 
 export function useGoogleAuth(): UseGoogleAuthReturn {
   const [isInitialized, setIsInitialized] = useState(false)
-  const [isSignedIn, setIsSignedIn] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
-  const [user, setUser] = useState<GoogleUser | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [accessToken, setAccessToken] = useState<string | null>(null)
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [activeEmail, setActiveEmail] = useState<string | null>(null)
 
-  const tokenClientRef = useRef<TokenClient | null>(null)
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const refreshPromiseRef = useRef<Promise<string | null> | null>(null)
   const isEnabled = isGoogleAuthEnabled()
 
-  // Schedule automatic token refresh
+  // Derived state
+  const activeAccount = accounts.find(a => a.user.email === activeEmail) || null
+  const user = activeAccount?.user || null
+  const isSignedIn = !!activeAccount
+
+  // Schedule automatic token refresh for active account
   const scheduleTokenRefresh = useCallback((expiresAt: number) => {
-    // Clear any existing timer
     if (refreshTimerRef.current) {
       clearTimeout(refreshTimerRef.current)
     }
 
     const refreshTime = expiresAt - TOKEN_REFRESH_BUFFER_MS - Date.now()
-    if (refreshTime <= 0) {
-      // Token already needs refresh
-      return
-    }
+    if (refreshTime <= 0) return
 
     refreshTimerRef.current = setTimeout(() => {
       console.log('Auto-refreshing token...')
@@ -102,133 +155,102 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
     }, refreshTime)
   }, [])
 
-  // Internal refresh token implementation
-  const doRefreshToken = useCallback((): Promise<string | null> => {
-    // Return existing promise if refresh already in progress
+  // Refresh token for active account
+  const doRefreshToken = useCallback(async (): Promise<string | null> => {
     if (refreshPromiseRef.current) {
       return refreshPromiseRef.current
     }
 
-    if (!window.google?.accounts?.oauth2) {
-      return Promise.resolve(null)
+    if (!activeAccount?.refreshToken) {
+      console.error('No refresh token available')
+      return null
     }
 
-    const promise = new Promise<string | null>((resolve) => {
-      const client = window.google!.accounts.oauth2.initTokenClient({
-        client_id: config.googleClientId!,
-        scope: SCOPES,
-        callback: async (response: TokenResponse) => {
-          refreshPromiseRef.current = null
+    const promise = (async (): Promise<string | null> => {
+      try {
+        const response = await fetch('/api/auth/refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refresh_token: activeAccount.refreshToken }),
+        })
 
-          if (response.error) {
-            console.error('Token refresh error:', response.error)
-            // On refresh failure, sign out
-            setUser(null)
-            setAccessToken(null)
-            setIsSignedIn(false)
-            localStorage.removeItem(STORAGE_KEY)
-            resolve(null)
-            return
-          }
+        const data = await response.json()
 
-          try {
-            window.gapi!.client.setToken({ access_token: response.access_token })
+        if (!response.ok) {
+          console.error('Token refresh failed:', data.error)
+          // Remove failed account
+          const newAccounts = accounts.filter(a => a.user.email !== activeEmail)
+          const newActiveEmail = newAccounts.length > 0 ? newAccounts[0].user.email : null
+          setAccounts(newAccounts)
+          setActiveEmail(newActiveEmail)
+          saveStoredAccounts({ accounts: newAccounts, activeEmail: newActiveEmail })
+          return null
+        }
 
-            const expiresAt = Date.now() + (response.expires_in * 1000)
+        if (window.gapi?.client) {
+          window.gapi.client.setToken({ access_token: data.access_token })
+        }
 
-            // Update stored auth with existing user info
-            const stored = localStorage.getItem(STORAGE_KEY)
-            if (stored) {
-              const auth: StoredAuth = JSON.parse(stored)
-              const authData: StoredAuth = {
-                user: auth.user,
-                accessToken: response.access_token,
-                expiresAt,
-              }
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(authData))
+        const expiresAt = Date.now() + (data.expires_in * 1000)
+
+        // Update the account
+        const newAccounts = accounts.map(a => {
+          if (a.user.email === activeEmail) {
+            return {
+              ...a,
+              accessToken: data.access_token,
+              refreshToken: data.refresh_token || a.refreshToken,
+              expiresAt,
             }
-
-            setAccessToken(response.access_token)
-            scheduleTokenRefresh(expiresAt)
-            resolve(response.access_token)
-          } catch (err) {
-            console.error('Failed to refresh token:', err)
-            resolve(null)
           }
-        },
-        error_callback: (err) => {
-          refreshPromiseRef.current = null
-          console.error('Token refresh error callback:', err)
-          resolve(null)
-        },
-      })
+          return a
+        })
 
-      // Request token silently (no popup)
-      client.requestAccessToken({ prompt: '' })
-    })
+        setAccounts(newAccounts)
+        saveStoredAccounts({ accounts: newAccounts, activeEmail })
+        scheduleTokenRefresh(expiresAt)
+        return data.access_token
+      } catch (err) {
+        console.error('Failed to refresh token:', err)
+        return null
+      } finally {
+        refreshPromiseRef.current = null
+      }
+    })()
 
     refreshPromiseRef.current = promise
     return promise
-  }, [scheduleTokenRefresh])
+  }, [activeAccount, activeEmail, accounts, scheduleTokenRefresh])
 
-  // Attempt silent refresh on init when token is expired but user exists
-  const attemptSilentRefresh = useCallback((storedUser: GoogleUser) => {
-    if (!window.google?.accounts?.oauth2) {
-      // Google not ready yet, clear storage
-      localStorage.removeItem(STORAGE_KEY)
-      setUser(null)
-      setIsSignedIn(false)
-      return
+  // Refresh token for a specific account (used during initialization)
+  const refreshAccountToken = useCallback(async (account: Account): Promise<Account | null> => {
+    try {
+      const response = await fetch('/api/auth/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: account.refreshToken }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        console.error('Token refresh failed for', account.user.email)
+        return null
+      }
+
+      return {
+        ...account,
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token || account.refreshToken,
+        expiresAt: Date.now() + (data.expires_in * 1000),
+      }
+    } catch (err) {
+      console.error('Failed to refresh token for', account.user.email, err)
+      return null
     }
+  }, [])
 
-    const client = window.google.accounts.oauth2.initTokenClient({
-      client_id: config.googleClientId!,
-      scope: SCOPES,
-      callback: async (response: TokenResponse) => {
-        if (response.error) {
-          console.error('Silent refresh failed:', response.error)
-          // Silent refresh failed, user needs to sign in again
-          localStorage.removeItem(STORAGE_KEY)
-          setUser(null)
-          setIsSignedIn(false)
-          return
-        }
-
-        try {
-          window.gapi!.client.setToken({ access_token: response.access_token })
-
-          const expiresAt = Date.now() + (response.expires_in * 1000)
-
-          // Update stored auth
-          const authData: StoredAuth = {
-            user: storedUser,
-            accessToken: response.access_token,
-            expiresAt,
-          }
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(authData))
-
-          setAccessToken(response.access_token)
-          scheduleTokenRefresh(expiresAt)
-        } catch (err) {
-          console.error('Failed during silent refresh:', err)
-          localStorage.removeItem(STORAGE_KEY)
-          setUser(null)
-          setIsSignedIn(false)
-        }
-      },
-      error_callback: (err) => {
-        console.error('Silent refresh error:', err)
-        localStorage.removeItem(STORAGE_KEY)
-        setUser(null)
-        setIsSignedIn(false)
-      },
-    })
-
-    // Request token silently
-    client.requestAccessToken({ prompt: '' })
-  }, [scheduleTokenRefresh])
-
-  // Initialize Google APIs
+  // Initialize
   useEffect(() => {
     if (!isEnabled) {
       setIsInitialized(true)
@@ -237,12 +259,10 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
 
     let mounted = true
 
-    const initializeGoogleAuth = async () => {
+    const initialize = async () => {
       try {
-        // Wait for scripts to load
         await waitForGoogleScripts()
 
-        // Initialize GAPI client
         await new Promise<void>((resolve) => {
           window.gapi!.load('client', async () => {
             await window.gapi!.client.init({
@@ -252,36 +272,49 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
           })
         })
 
-        if (mounted) {
-          setIsInitialized(true)
+        if (!mounted) return
 
-          // Check for stored auth
-          const stored = localStorage.getItem(STORAGE_KEY)
-          if (stored) {
-            try {
-              const auth: StoredAuth = JSON.parse(stored)
-              // Check if token is still valid (with 5 min buffer)
-              if (auth.expiresAt > Date.now() + TOKEN_REFRESH_BUFFER_MS) {
-                setUser(auth.user)
-                setAccessToken(auth.accessToken)
-                setIsSignedIn(true)
-                window.gapi!.client.setToken({ access_token: auth.accessToken })
+        setIsInitialized(true)
 
-                // Schedule automatic token refresh
-                scheduleTokenRefresh(auth.expiresAt)
-              } else {
-                // Token expired but we have user info - try silent refresh
-                // Keep user info visible while refreshing
-                setUser(auth.user)
-                setIsSignedIn(true)
+        // Load stored accounts
+        const stored = loadStoredAccounts()
+        if (stored.accounts.length === 0) return
 
-                // Try silent token refresh
-                attemptSilentRefresh(auth.user)
-              }
-            } catch {
-              localStorage.removeItem(STORAGE_KEY)
+        // Refresh expired tokens
+        const refreshedAccounts: Account[] = []
+        for (const account of stored.accounts) {
+          if (account.expiresAt > Date.now() + TOKEN_REFRESH_BUFFER_MS) {
+            // Token still valid
+            refreshedAccounts.push(account)
+          } else if (account.refreshToken) {
+            // Need to refresh
+            const refreshed = await refreshAccountToken(account)
+            if (refreshed) {
+              refreshedAccounts.push(refreshed)
             }
           }
+        }
+
+        if (refreshedAccounts.length === 0) {
+          saveStoredAccounts({ accounts: [], activeEmail: null })
+          return
+        }
+
+        // Determine active account
+        let newActiveEmail = stored.activeEmail
+        if (!refreshedAccounts.find(a => a.user.email === newActiveEmail)) {
+          newActiveEmail = refreshedAccounts[0].user.email
+        }
+
+        setAccounts(refreshedAccounts)
+        setActiveEmail(newActiveEmail)
+        saveStoredAccounts({ accounts: refreshedAccounts, activeEmail: newActiveEmail })
+
+        // Set gapi token for active account
+        const active = refreshedAccounts.find(a => a.user.email === newActiveEmail)
+        if (active) {
+          window.gapi!.client.setToken({ access_token: active.accessToken })
+          scheduleTokenRefresh(active.expiresAt)
         }
       } catch (err) {
         console.error('Failed to initialize Google Auth:', err)
@@ -292,15 +325,15 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
       }
     }
 
-    initializeGoogleAuth()
+    initialize()
 
     return () => {
       mounted = false
     }
-  }, [isEnabled])
+  }, [isEnabled, refreshAccountToken, scheduleTokenRefresh])
 
-  // Sign in
-  const signIn = useCallback(() => {
+  // Add a new account
+  const addAccount = useCallback(() => {
     if (!isInitialized || !window.google?.accounts?.oauth2) {
       console.error('Google Auth not initialized')
       return
@@ -309,11 +342,15 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
     setIsLoading(true)
     setError(null)
 
-    // Create token client with callback
-    const client = window.google.accounts.oauth2.initTokenClient({
+    const client = window.google.accounts.oauth2.initCodeClient({
       client_id: config.googleClientId!,
       scope: SCOPES,
-      callback: async (response: TokenResponse) => {
+      ux_mode: 'popup',
+      // Request offline access to get a refresh token for long-lived sessions
+      access_type: 'offline',
+      // Force consent to ensure we always get a refresh token (even for returning users)
+      prompt: 'consent',
+      callback: async (response: CodeResponse) => {
         if (response.error) {
           console.error('OAuth error:', response.error)
           setError(response.error)
@@ -322,32 +359,50 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
         }
 
         try {
-          // Set the token in gapi client
-          window.gapi!.client.setToken({ access_token: response.access_token })
+          const tokenResponse = await fetch('/api/auth/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: response.code }),
+          })
 
-          // Fetch user info
-          const userInfo = await fetchUserInfo(response.access_token)
+          const tokenData = await tokenResponse.json()
 
-          // Calculate expiration time
-          const expiresAt = Date.now() + (response.expires_in * 1000)
+          if (!tokenResponse.ok) {
+            console.error('Token exchange failed:', tokenData.error)
+            setError(tokenData.error || 'Token exchange failed')
+            setIsLoading(false)
+            return
+          }
 
-          // Store auth data
-          const authData: StoredAuth = {
+          window.gapi!.client.setToken({ access_token: tokenData.access_token })
+
+          const userInfo = await fetchUserInfo(tokenData.access_token)
+          const expiresAt = Date.now() + (tokenData.expires_in * 1000)
+
+          const newAccount: Account = {
             user: userInfo,
-            accessToken: response.access_token,
+            accessToken: tokenData.access_token,
+            refreshToken: tokenData.refresh_token,
             expiresAt,
           }
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(authData))
 
-          setUser(userInfo)
-          setAccessToken(response.access_token)
-          setIsSignedIn(true)
+          // Check if account already exists (update it) or add new
+          const existingIndex = accounts.findIndex(a => a.user.email === userInfo.email)
+          let newAccounts: Account[]
+          if (existingIndex >= 0) {
+            newAccounts = [...accounts]
+            newAccounts[existingIndex] = newAccount
+          } else {
+            newAccounts = [...accounts, newAccount]
+          }
 
-          // Schedule automatic token refresh
+          setAccounts(newAccounts)
+          setActiveEmail(userInfo.email)
+          saveStoredAccounts({ accounts: newAccounts, activeEmail: userInfo.email })
           scheduleTokenRefresh(expiresAt)
         } catch (err) {
-          console.error('Failed to get user info:', err)
-          setError('Failed to get user info')
+          console.error('Failed to add account:', err)
+          setError('Failed to add account')
         } finally {
           setIsLoading(false)
         }
@@ -359,40 +414,93 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
       },
     })
 
-    tokenClientRef.current = client
+    client.requestCode()
+  }, [isInitialized, accounts, scheduleTokenRefresh])
 
-    // Request access token - use empty prompt for silent refresh, 'consent' for first time
-    client.requestAccessToken({ prompt: '' })
-  }, [isInitialized, scheduleTokenRefresh])
+  // Switch to a different account
+  const switchAccount = useCallback((email: string) => {
+    const account = accounts.find(a => a.user.email === email)
+    if (!account) {
+      console.error('Account not found:', email)
+      return
+    }
 
-  // Sign out
+    setActiveEmail(email)
+    saveStoredAccounts({ accounts, activeEmail: email })
+
+    if (window.gapi?.client) {
+      window.gapi.client.setToken({ access_token: account.accessToken })
+    }
+
+    // Schedule refresh for new active account
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current)
+    }
+    scheduleTokenRefresh(account.expiresAt)
+  }, [accounts, scheduleTokenRefresh])
+
+  // Remove an account and delete its local data
+  const removeAccount = useCallback((email: string) => {
+    const account = accounts.find(a => a.user.email === email)
+    if (account?.accessToken) {
+      window.google?.accounts.oauth2.revoke?.(account.accessToken, () => {
+        console.log('Token revoked for', email)
+      })
+    }
+
+    // Delete user's local habit data
+    const sanitizedEmail = email.replace(/[^a-zA-Z0-9@._-]/g, '_')
+    localStorage.removeItem(`habit-calendar-data-${sanitizedEmail}`)
+
+    const newAccounts = accounts.filter(a => a.user.email !== email)
+    let newActiveEmail = activeEmail
+
+    // If removing active account, switch to another or null
+    if (email === activeEmail) {
+      newActiveEmail = newAccounts.length > 0 ? newAccounts[0].user.email : null
+
+      if (newActiveEmail) {
+        const newActive = newAccounts.find(a => a.user.email === newActiveEmail)
+        if (newActive && window.gapi?.client) {
+          window.gapi.client.setToken({ access_token: newActive.accessToken })
+          scheduleTokenRefresh(newActive.expiresAt)
+        }
+      } else {
+        window.gapi?.client.setToken(null)
+        if (refreshTimerRef.current) {
+          clearTimeout(refreshTimerRef.current)
+        }
+      }
+    }
+
+    setAccounts(newAccounts)
+    setActiveEmail(newActiveEmail)
+    saveStoredAccounts({ accounts: newAccounts, activeEmail: newActiveEmail })
+  }, [accounts, activeEmail, scheduleTokenRefresh])
+
+  // Sign out all accounts
   const signOut = useCallback(() => {
-    if (accessToken) {
-      // Revoke the token
-      window.google?.accounts.oauth2.revoke?.(accessToken, () => {
-        console.log('Token revoked')
+    // Revoke all tokens
+    for (const account of accounts) {
+      window.google?.accounts.oauth2.revoke?.(account.accessToken, () => {
+        console.log('Token revoked for', account.user.email)
       })
     }
 
     window.gapi?.client.setToken(null)
-    setUser(null)
-    setAccessToken(null)
-    setIsSignedIn(false)
-    localStorage.removeItem(STORAGE_KEY)
-  }, [accessToken])
-
-  // Get access token (for API calls)
-  const getAccessToken = useCallback((): string | null => {
-    return accessToken
-  }, [accessToken])
-
-  // Clear timer on sign out
-  const signOutWithCleanup = useCallback(() => {
     if (refreshTimerRef.current) {
       clearTimeout(refreshTimerRef.current)
     }
-    signOut()
-  }, [signOut])
+
+    setAccounts([])
+    setActiveEmail(null)
+    saveStoredAccounts({ accounts: [], activeEmail: null })
+  }, [accounts])
+
+  // Get access token for active account
+  const getAccessToken = useCallback((): string | null => {
+    return activeAccount?.accessToken || null
+  }, [activeAccount])
 
   // Cleanup timer on unmount
   useEffect(() => {
@@ -409,9 +517,12 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
     isSignedIn,
     isLoading,
     user,
+    accounts,
     error,
-    signIn,
-    signOut: signOutWithCleanup,
+    addAccount,
+    switchAccount,
+    removeAccount,
+    signOut,
     getAccessToken,
     refreshToken: doRefreshToken,
   }

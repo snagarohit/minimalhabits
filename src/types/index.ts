@@ -29,11 +29,21 @@ export interface TimedEntry {
   duration: number // minutes
 }
 
+// Active timer for running timers (synced to cloud)
+export interface ActiveTimer {
+  id: string
+  habitId: string
+  date: string // YYYY-MM-DD - the logical day when timer started
+  startTime: string // HH:MM (24h format)
+  startTimestamp: number // Unix timestamp in ms for elapsed calculation
+}
+
 export interface HabitData {
   habits: Habit[]
   completions: HabitCompletion[]
   groups: HabitGroup[]
   timedEntries?: TimedEntry[] // Optional for backward compatibility
+  activeTimers?: ActiveTimer[] // Running timers (synced across devices)
 }
 
 export interface WeekData {

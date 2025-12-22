@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useCallback, useRef, useLayoutEffect } fr
 import { format } from 'date-fns'
 import { ResponsiveDialog } from './ResponsiveDialog'
 import { HabitChipList } from './HabitChipList'
-import type { Habit, HabitGroup, TimedEntry, HabitCompletion } from '../types'
+import type { Habit, HabitGroup, TimedEntry, HabitCompletion, ActiveTimer } from '../types'
 
 interface DayViewProps {
   date: Date
@@ -10,6 +10,7 @@ interface DayViewProps {
   groups: HabitGroup[]
   timedEntries: TimedEntry[]
   completions: HabitCompletion[]
+  activeTimers: ActiveTimer[]
   habitDisplayColors: Map<string, string>
   visibleHabitIds: Set<string>
   onToggleVisibility: (habitId: string) => void
@@ -17,6 +18,8 @@ interface DayViewProps {
   onAddTimedEntry: (habitId: string, date: string, startTime: string, duration: number) => TimedEntry
   onUpdateTimedEntry: (id: string, updates: Partial<Omit<TimedEntry, 'id'>>) => void
   onDeleteTimedEntry: (id: string) => void
+  onStartTimer: (habitId: string, date: string, startTime: string, customStartTimestamp?: number) => ActiveTimer
+  onStopTimer: (timerId: string) => ActiveTimer | undefined
   onToggleCompletion: (habitId: string, date: string) => void
   onCelebrate: () => void
   onOpenEditPanel: (mode?: 'list' | 'add-habit') => void
@@ -85,15 +88,13 @@ function formatDuration(minutes: number): string {
   return `${hours} hr${hours > 1 ? 's' : ''} ${mins} min`
 }
 
-// Storage key for persisting active timers
-const TIMERS_STORAGE_KEY = 'habit-active-timers'
-
 export function DayView({
   date,
   habits,
   groups,
   timedEntries,
   completions: _completions,
+  activeTimers,
   habitDisplayColors,
   visibleHabitIds,
   onToggleVisibility,
@@ -101,6 +102,8 @@ export function DayView({
   onAddTimedEntry,
   onUpdateTimedEntry,
   onDeleteTimedEntry,
+  onStartTimer,
+  onStopTimer,
   onToggleCompletion: _onToggleCompletion,
   onCelebrate,
   onOpenEditPanel,
@@ -128,64 +131,8 @@ export function DayView({
   const [waitingForHabit, setWaitingForHabit] = useState(false)
   const prevHabitsCountRef = useRef(habits.length)
 
-  // Timer state - supports multiple simultaneous timers (persisted to localStorage)
-  const hasInitializedRef = useRef(false)
-  const [activeTimers, setActiveTimers] = useState<Array<{
-    id: string
-    habitId: string
-    startTime: string
-    startTimestamp: number
-    col: number
-    row: number
-  }>>(() => {
-    // Initialize from localStorage
-    try {
-      const stored = localStorage.getItem(TIMERS_STORAGE_KEY)
-      if (stored) {
-        return JSON.parse(stored)
-      }
-    } catch (e) {
-      console.error('Failed to load timers from localStorage:', e)
-    }
-    return []
-  })
-  const [timerTick, setTimerTick] = useState(0) // Forces re-render for elapsed time
-
-  // Persist timers to localStorage whenever they change (skip initial mount)
-  useEffect(() => {
-    if (!hasInitializedRef.current) {
-      hasInitializedRef.current = true
-      return
-    }
-    try {
-      if (activeTimers.length > 0) {
-        localStorage.setItem(TIMERS_STORAGE_KEY, JSON.stringify(activeTimers))
-      } else {
-        localStorage.removeItem(TIMERS_STORAGE_KEY)
-      }
-    } catch (e) {
-      console.error('Failed to save timers to localStorage:', e)
-    }
-  }, [activeTimers])
-
-  // Clean up timers when habits are deleted
-  const prevHabitsRef = useRef(habits)
-  useEffect(() => {
-    // Only run cleanup when habits actually change (not on mount)
-    const prevHabits = prevHabitsRef.current
-    prevHabitsRef.current = habits
-
-    // Skip if this is initial mount or habits haven't changed
-    if (prevHabits === habits || habits.length === 0) return
-
-    // Only clean up if a habit was removed
-    if (habits.length < prevHabits.length) {
-      setActiveTimers(prev => {
-        const validTimers = prev.filter(t => habits.some(h => h.id === t.habitId))
-        return validTimers.length !== prev.length ? validTimers : prev
-      })
-    }
-  }, [habits])
+  // Timer tick for re-rendering elapsed time
+  const [timerTick, setTimerTick] = useState(0)
   const [showTimerHabitSelector, setShowTimerHabitSelector] = useState(false)
   const [showVisibilityDialog, setShowVisibilityDialog] = useState(false)
 
@@ -599,46 +546,26 @@ export function DayView({
     if (!currentSlot) return
 
     const { hour, minute } = slotToTime(currentSlot.col, currentSlot.row)
-    const newTimer = {
-      id: `timer-${Date.now()}`,
-      habitId,
-      startTime: formatTimeString(hour, minute),
-      startTimestamp: Date.now(),
-      col: currentSlot.col,
-      row: currentSlot.row,
-    }
-    setActiveTimers(prev => [...prev, newTimer])
+    onStartTimer(habitId, dateString, formatTimeString(hour, minute))
     setShowTimerHabitSelector(false)
-  }, [currentSlot])
+  }, [currentSlot, dateString, onStartTimer])
 
   // Convert an existing entry to a live timer (keep running from its start time)
   const handleKeepRunning = useCallback((entryId: string) => {
     const entry = dayEntries.find(e => e.id === entryId)
     if (!entry) return
 
+    // Calculate timestamp for the entry's start time (to continue timer from original start)
     const [h, m] = entry.startTime.split(':').map(Number)
-    const slot = timeToSlot(h, m)
-    if (!slot) return
-
-    // Calculate timestamp for the entry's start time
     const startDate = new Date()
     startDate.setHours(h, m, 0, 0)
     const startTimestamp = startDate.getTime()
 
-    const newTimer = {
-      id: `timer-${Date.now()}`,
-      habitId: entry.habitId,
-      startTime: entry.startTime,
-      startTimestamp,
-      col: slot.col,
-      row: slot.row,
-    }
-
-    // Delete the fixed entry and start the timer
+    // Delete the fixed entry and start the timer from original start time
     onDeleteTimedEntry(entryId)
-    setActiveTimers(prev => [...prev, newTimer])
+    onStartTimer(entry.habitId, dateString, entry.startTime, startTimestamp)
     setEditingEntry(null)
-  }, [dayEntries, onDeleteTimedEntry])
+  }, [dayEntries, dateString, onDeleteTimedEntry, onStartTimer])
 
   // Stop a specific timer and save entry
   const handleStopTimer = useCallback((timerId: string) => {
@@ -651,9 +578,8 @@ export function DayView({
 
     onAddTimedEntry(timer.habitId, dateString, timer.startTime, durationMinutes)
     onCelebrate()
-
-    setActiveTimers(prev => prev.filter(t => t.id !== timerId))
-  }, [activeTimers, getElapsedSeconds, dateString, onAddTimedEntry, onCelebrate])
+    onStopTimer(timerId)
+  }, [activeTimers, getElapsedSeconds, dateString, onAddTimedEntry, onCelebrate, onStopTimer])
 
   // Get timer info helpers
   const getTimerHabit = useCallback((timer: typeof activeTimers[0]) => {

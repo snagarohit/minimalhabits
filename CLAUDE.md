@@ -1,24 +1,35 @@
 # CLAUDE.md
 
 ## Project Overview
-Minimal Habits - A habit tracking calendar app built with React + TypeScript + Vite. Deployed on Netlify at minimalhabits.samineni.me.
+Minimal Habits - A habit tracking calendar app built with Next.js + React + TypeScript. Deployed on Vercel/Netlify at minimalhabits.samineni.me.
 
 ## Key Commands
-- `npm run dev` - Start dev server
-- `npm run build` - Build for production (runs tsc + vite build)
-- `npm run preview` - Preview production build
+- `npm run dev` - Start dev server (port 3000)
+- `npm run build` - Build for production
+- `npm run start` - Start production server
 
 ## Architecture
+
+### Framework
+- **Next.js 16** with App Router
+- Server-side API routes for OAuth token handling
+- Client-side React components with SSR support
 
 ### State Management
 - `useHabits` hook manages all habit data (habits, completions, groups, timedEntries)
 - Data persisted to localStorage (`habit-calendar-data`)
 - Optional Google Drive sync via `useCloudSync` hook
 
+### Authentication Flow
+- Google OAuth 2.0 with authorization code flow
+- Server-side token exchange for secure refresh token handling
+- API routes: `/api/auth/token` (code exchange), `/api/auth/refresh` (token refresh)
+- Refresh tokens enable persistent sessions beyond 1 hour
+
 ### Color System
 - **Colors are dynamic, not stored** - habit.color is deprecated
-- Colors computed at runtime based on visible habits using OKLCH color space
-- Evenly-spaced hues (360°/N) for maximum distinguishability
+- Colors computed at runtime based on visible habits
+- Curated palette for ≤10 habits, algorithmic HSL for more
 - Grays reserved for system UI (overflow badges, disabled states)
 
 ### Key Types
@@ -44,15 +55,28 @@ Minimal Habits - A habit tracking calendar app built with React + TypeScript + V
 - Keep solutions simple and focused on the task
 
 ### Environment Variables
-- `VITE_GOOGLE_CLIENT_ID` - Required for Google Drive backup (must be set in Netlify for production)
+Client-side (exposed to browser):
+- `NEXT_PUBLIC_GOOGLE_CLIENT_ID` - Google OAuth client ID
+
+Server-side only (keep secret!):
+- `GOOGLE_CLIENT_ID` - Same as above, for server API routes
+- `GOOGLE_CLIENT_SECRET` - OAuth client secret from Google Cloud Console
 
 ## File Structure
 ```
 src/
-  components/     # React components
-  hooks/          # Custom hooks (useHabits, useGoogleAuth, useCloudSync, etc.)
-  services/       # External services (driveStorage.ts)
-  types/          # TypeScript types
-  App.tsx         # Main app component
-  config.ts       # App configuration
+  app/
+    api/
+      auth/
+        token/route.ts    # OAuth code exchange
+        refresh/route.ts  # Token refresh
+    layout.tsx            # Root layout
+    page.tsx              # Main page (client component)
+    globals.css           # Global styles
+  components/             # React components
+  hooks/                  # Custom hooks (useHabits, useGoogleAuth, useCloudSync, etc.)
+  services/               # External services (driveStorage.ts)
+  types/                  # TypeScript types
+  App.tsx                 # Main app component
+  config.ts               # App configuration
 ```
