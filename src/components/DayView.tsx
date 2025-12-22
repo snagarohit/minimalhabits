@@ -260,45 +260,75 @@ export function DayView({
 
   // Compute entry layout info for continuous block rendering
   // Each entry gets: column, startRow, rowSpan, and horizontal position based on overlaps
+  // Supports cross-column entries (entries longer than 8 hours)
   const entryLayout = useMemo(() => {
-    // First, compute the slots each entry occupies
-    const entrySlots = dayEntries.map(entry => {
+    // First, compute the slots each entry occupies - now supports cross-column
+    const entrySlots: Array<{
+      entry: typeof dayEntries[0]
+      col: number
+      startRow: number
+      rowSpan: number
+    }> = []
+
+    dayEntries.forEach(entry => {
       const [h, m] = entry.startTime.split(':').map(Number)
       const start = timeToSlot(h, m)
-      if (!start) return { entry, col: -1, startRow: -1, rowSpan: 0 }
+      if (!start) return
 
       const numSlots = Math.ceil(entry.duration / 15)
-      // For now, entries stay within their starting column
-      const rowSpan = Math.min(numSlots, ROWS - start.row)
+      const startAbsolute = start.col * ROWS + start.row
+      const endAbsolute = startAbsolute + numSlots
 
-      return { entry, col: start.col, startRow: start.row, rowSpan }
-    }).filter(e => e.col >= 0)
+      // Generate layout entries for each column the entry spans
+      for (let col = start.col; col < COLUMNS; col++) {
+        const colStartAbsolute = col * ROWS
+        const colEndAbsolute = (col + 1) * ROWS
 
-    // For each slot, find which entries occupy it
-    const slotToEntryIds = new Map<string, Set<string>>()
+        // Check if entry occupies any slots in this column
+        if (startAbsolute >= colEndAbsolute || endAbsolute <= colStartAbsolute) continue
 
-    entrySlots.forEach(({ entry, col, startRow, rowSpan }) => {
-      for (let r = startRow; r < startRow + rowSpan; r++) {
-        const key = `${col}:${r}`
-        if (!slotToEntryIds.has(key)) slotToEntryIds.set(key, new Set())
-        slotToEntryIds.get(key)!.add(entry.id)
+        const rowStart = col === start.col ? start.row : 0
+        const rowEnd = Math.min(ROWS, endAbsolute - colStartAbsolute)
+        const rowSpan = rowEnd - rowStart
+
+        if (rowSpan > 0) {
+          entrySlots.push({
+            entry,
+            col,
+            startRow: rowStart,
+            rowSpan
+          })
+        }
       }
     })
 
-    // For each entry, find its maximum overlap count and consistent position
-    // We need to find the maximum number of overlapping entries across all its slots
-    // and assign a consistent horizontal position
-    const entryMaxOverlap = new Map<string, number>()
-    const entryPosition = new Map<string, number>()
+    // For each slot, find which entry segments occupy it
+    // Use composite key entry.id:col to handle cross-column entries
+    const slotToSegmentKeys = new Map<string, Set<string>>()
 
     entrySlots.forEach(({ entry, col, startRow, rowSpan }) => {
+      const segmentKey = `${entry.id}:${col}`
+      for (let r = startRow; r < startRow + rowSpan; r++) {
+        const slotKey = `${col}:${r}`
+        if (!slotToSegmentKeys.has(slotKey)) slotToSegmentKeys.set(slotKey, new Set())
+        slotToSegmentKeys.get(slotKey)!.add(segmentKey)
+      }
+    })
+
+    // For each entry segment (entry + column), find its maximum overlap count
+    // Each column segment can have different overlap counts
+    const segmentMaxOverlap = new Map<string, number>()
+    const segmentPosition = new Map<string, number>()
+
+    entrySlots.forEach(({ entry, col, startRow, rowSpan }) => {
+      const segmentKey = `${entry.id}:${col}`
       let maxOverlap = 1
       for (let r = startRow; r < startRow + rowSpan; r++) {
-        const key = `${col}:${r}`
-        const count = slotToEntryIds.get(key)?.size || 1
+        const slotKey = `${col}:${r}`
+        const count = slotToSegmentKeys.get(slotKey)?.size || 1
         maxOverlap = Math.max(maxOverlap, count)
       }
-      entryMaxOverlap.set(entry.id, maxOverlap)
+      segmentMaxOverlap.set(segmentKey, maxOverlap)
     })
 
     // Assign positions - group overlapping entries and assign consistent positions
@@ -307,12 +337,14 @@ export function DayView({
       const processed = new Set<string>()
 
       for (let row = 0; row < ROWS; row++) {
-        const key = `${col}:${row}`
-        const entryIds = slotToEntryIds.get(key)
-        if (!entryIds) continue
+        const slotKey = `${col}:${row}`
+        const segmentKeys = slotToSegmentKeys.get(slotKey)
+        if (!segmentKeys) continue
 
-        // Sort entries by start time for consistent ordering
-        const sortedIds = Array.from(entryIds).sort((aId, bId) => {
+        // Sort segments by their entry's start time for consistent ordering
+        const sortedKeys = Array.from(segmentKeys).sort((aKey, bKey) => {
+          const aId = aKey.split(':')[0]
+          const bId = bKey.split(':')[0]
           const aEntry = dayEntries.find(e => e.id === aId)!
           const bEntry = dayEntries.find(e => e.id === bId)!
           const [ah, am] = aEntry.startTime.split(':').map(Number)
@@ -320,36 +352,39 @@ export function DayView({
           return ah * 60 + am - (bh * 60 + bm)
         })
 
-        // Assign positions to entries that haven't been positioned yet
+        // Assign positions to segments that haven't been positioned yet
         const usedPositions = new Set<number>()
-        sortedIds.forEach(id => {
-          if (entryPosition.has(id)) {
-            usedPositions.add(entryPosition.get(id)!)
+        sortedKeys.forEach(key => {
+          if (segmentPosition.has(key)) {
+            usedPositions.add(segmentPosition.get(key)!)
           }
         })
 
-        sortedIds.forEach((id) => {
-          if (!processed.has(id)) {
+        sortedKeys.forEach((key) => {
+          if (!processed.has(key)) {
             // Find first available position
             let pos = 0
             while (usedPositions.has(pos)) pos++
-            entryPosition.set(id, pos)
+            segmentPosition.set(key, pos)
             usedPositions.add(pos)
-            processed.add(id)
+            processed.add(key)
           }
         })
       }
     }
 
     // Build final layout
-    return entrySlots.map(({ entry, col, startRow, rowSpan }) => ({
-      entry,
-      col,
-      startRow,
-      rowSpan,
-      position: entryPosition.get(entry.id) || 0,
-      maxOverlap: entryMaxOverlap.get(entry.id) || 1
-    }))
+    return entrySlots.map(({ entry, col, startRow, rowSpan }) => {
+      const segmentKey = `${entry.id}:${col}`
+      return {
+        entry,
+        col,
+        startRow,
+        rowSpan,
+        position: segmentPosition.get(segmentKey) || 0,
+        maxOverlap: segmentMaxOverlap.get(segmentKey) || 1
+      }
+    })
   }, [dayEntries])
 
   // Convert col/row to absolute slot index (0 to COLUMNS*ROWS-1)
@@ -358,6 +393,59 @@ export function DayView({
     col: Math.floor(slot / ROWS),
     row: slot % ROWS
   }), [])
+
+  // Compute timer layout - shows running timers as blocks from start to current time
+  // Supports cross-column rendering when timer runs for more than 8 hours
+  const timerLayout = useMemo(() => {
+    if (!currentSlot || activeTimers.length === 0) return []
+
+    const layouts: Array<{
+      timer: typeof activeTimers[0]
+      col: number
+      startRow: number
+      rowSpan: number
+    }> = []
+
+    activeTimers.forEach(timer => {
+      const [h, m] = timer.startTime.split(':').map(Number)
+      const startSlotPos = timeToSlot(h, m)
+      if (!startSlotPos) return
+
+      // Calculate current duration in slots (from start to now)
+      const elapsedMs = Date.now() - timer.startTimestamp
+      const elapsedMinutes = Math.floor(elapsedMs / 60000)
+      const elapsedSlots = Math.max(1, Math.ceil(elapsedMinutes / 15))
+
+      // Calculate absolute slot positions
+      const startAbsolute = toAbsoluteSlot(startSlotPos.col, startSlotPos.row)
+      const currentAbsolute = toAbsoluteSlot(currentSlot.col, currentSlot.row)
+      const endAbsolute = Math.min(startAbsolute + elapsedSlots, currentAbsolute + 1)
+
+      // Generate layout entries for each column the timer spans
+      for (let col = startSlotPos.col; col < COLUMNS; col++) {
+        const colStartAbsolute = col * ROWS
+        const colEndAbsolute = (col + 1) * ROWS
+
+        // Check if timer occupies any slots in this column
+        if (startAbsolute >= colEndAbsolute || endAbsolute <= colStartAbsolute) continue
+
+        const rowStart = col === startSlotPos.col ? startSlotPos.row : 0
+        const rowEnd = Math.min(ROWS, endAbsolute - colStartAbsolute)
+        const rowSpan = rowEnd - rowStart
+
+        if (rowSpan > 0) {
+          layouts.push({
+            timer,
+            col,
+            startRow: rowStart,
+            rowSpan
+          })
+        }
+      }
+    })
+
+    return layouts
+  }, [activeTimers, currentSlot, toAbsoluteSlot, timerTick]) // timerTick ensures updates
 
   // Get selected slots during drag (all slots in range across columns)
   const selectedSlots = useMemo(() => {
@@ -523,6 +611,35 @@ export function DayView({
     setShowTimerHabitSelector(false)
   }, [currentSlot])
 
+  // Convert an existing entry to a live timer (keep running from its start time)
+  const handleKeepRunning = useCallback((entryId: string) => {
+    const entry = dayEntries.find(e => e.id === entryId)
+    if (!entry) return
+
+    const [h, m] = entry.startTime.split(':').map(Number)
+    const slot = timeToSlot(h, m)
+    if (!slot) return
+
+    // Calculate timestamp for the entry's start time
+    const startDate = new Date()
+    startDate.setHours(h, m, 0, 0)
+    const startTimestamp = startDate.getTime()
+
+    const newTimer = {
+      id: `timer-${Date.now()}`,
+      habitId: entry.habitId,
+      startTime: entry.startTime,
+      startTimestamp,
+      col: slot.col,
+      row: slot.row,
+    }
+
+    // Delete the fixed entry and start the timer
+    onDeleteTimedEntry(entryId)
+    setActiveTimers(prev => [...prev, newTimer])
+    setEditingEntry(null)
+  }, [dayEntries, onDeleteTimedEntry])
+
   // Stop a specific timer and save entry
   const handleStopTimer = useCallback((timerId: string) => {
     const timer = activeTimers.find(t => t.id === timerId)
@@ -668,8 +785,6 @@ export function DayView({
                 const key = `${col}:${row}`
                 const isSelected = selectedSlots.has(key)
                 const isHourStart = row % SLOTS_PER_HOUR === 0
-                const timersAtSlot = activeTimers.filter(t => t.col === col && t.row === row)
-                const hasTimer = timersAtSlot.length > 0
                 const isCurrent = currentSlot?.col === col && currentSlot?.row === row
                 const isCurrentHour = isHourStart && currentSlot?.col === col && Math.floor(currentSlot?.row / SLOTS_PER_HOUR) === Math.floor(row / SLOTS_PER_HOUR)
                 const { hour } = slotToTime(col, row)
@@ -701,8 +816,7 @@ export function DayView({
                     className={`
                       flex-1 relative select-none cursor-pointer
                       ${isHourStart ? 'border-t border-zinc-700/50' : 'border-t border-zinc-800/30'}
-                      ${isCurrent && !hasTimer ? 'bg-zinc-800/50' : ''}
-                      ${hasTimer ? 'ring-2 ring-inset ring-zinc-400 bg-zinc-700/50' : ''}
+                      ${isCurrent ? 'bg-zinc-800/50' : ''}
                     `}
                   >
                     {/* Hour label in left gutter - always visible on hour-start slots */}
@@ -750,26 +864,6 @@ export function DayView({
                       </div>
                     )}
 
-                    {/* Timer slot indicators */}
-                    {hasTimer && (
-                      <div className="absolute left-[15%] right-0 top-0 bottom-0 flex items-center gap-1 px-0.5 overflow-hidden pointer-events-none">
-                        {timersAtSlot.map(timer => {
-                          const timerHabit = getTimerHabit(timer)
-                          if (!timerHabit) return null
-                          return (
-                            <div key={timer.id} className="flex items-center gap-0.5 min-w-0">
-                              <span className="text-[9px] leading-none flex-shrink-0" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}>
-                                {timerHabit.emoji || ''}
-                              </span>
-                              <span className="text-[9px] text-white truncate leading-none font-medium">
-                                {timerHabit.name}
-                              </span>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    )}
-
                     {/* Selection overlay */}
                     {isSelected && (
                       <div className="absolute inset-0 bg-blue-500/40 pointer-events-none z-20" />
@@ -798,7 +892,7 @@ export function DayView({
 
                   return (
                     <div
-                      key={entry.id}
+                      key={`${entry.id}-${col}`}
                       data-entry={entry.id}
                       onClick={(e) => {
                         e.stopPropagation()
@@ -816,6 +910,51 @@ export function DayView({
                       {/* Entry label at top */}
                       {habit && (
                         <div className="flex items-center gap-0.5 px-1 pt-0.5 overflow-hidden w-full pointer-events-none">
+                          {habit.emoji && (
+                            <span className="text-[9px] leading-none flex-shrink-0" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}>
+                              {habit.emoji}
+                            </span>
+                          )}
+                          <span className="text-[9px] text-white truncate leading-none font-medium">
+                            {habit.name}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+
+              {/* Timer blocks - rendered on top of the grid, grows from start to current time */}
+              {timerLayout
+                .filter(layout => layout.col === col)
+                .map(({ timer, startRow, rowSpan }) => {
+                  const habit = habits.find(h => h.id === timer.habitId)
+                  const color = habit ? (habitDisplayColors.get(habit.id) || '#888') : '#666'
+
+                  // Calculate position as percentage of column
+                  const topPercent = (startRow / ROWS) * 100
+                  const heightPercent = (rowSpan / ROWS) * 100
+
+                  // Full width (no overlap handling for timers)
+                  const leftGutter = 15 // %
+                  const widthPercent = 100 - leftGutter - 2
+
+                  return (
+                    <div
+                      key={`${timer.id}-${col}`}
+                      className="absolute overflow-hidden rounded-sm z-10 animate-pulse pointer-events-none"
+                      style={{
+                        top: `calc(${topPercent}% + 1px)`,
+                        height: `calc(${heightPercent}% - 2px)`,
+                        left: `${leftGutter}%`,
+                        width: `${widthPercent}%`,
+                        backgroundColor: color,
+                        opacity: 0.7,
+                      }}
+                    >
+                      {/* Timer label at top */}
+                      {habit && (
+                        <div className="flex items-center gap-0.5 px-1 pt-0.5 overflow-hidden w-full">
                           {habit.emoji && (
                             <span className="text-[9px] leading-none flex-shrink-0" style={{ filter: 'drop-shadow(0 1px 2px rgba(0,0,0,0.9))' }}>
                               {habit.emoji}
@@ -1065,6 +1204,19 @@ export function DayView({
                 <div className="text-center text-xs text-zinc-500 mb-4 py-2 bg-zinc-800/50 rounded-lg">
                   {formatDuration(entry.duration)}
                 </div>
+
+                {/* Keep running option - only for past entries on today */}
+                {isToday && startMinutes < (now.getHours() * 60 + now.getMinutes()) && (
+                  <button
+                    onClick={() => handleKeepRunning(entry.id)}
+                    className="w-full mb-3 py-2.5 px-4 rounded-lg bg-blue-600/20 text-blue-400 text-sm font-medium hover:bg-blue-600/30 transition-colors flex items-center justify-center gap-2"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z" />
+                    </svg>
+                    Keep running
+                  </button>
+                )}
 
                 {/* Actions */}
                 <div className="flex gap-3">

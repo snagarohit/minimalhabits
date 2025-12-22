@@ -67,10 +67,13 @@ export const DayCell = memo(function DayCell({
   // Only show completed habits
   const completedHabits = completions.filter((c) => c.isComplete)
 
-  // Calculate overflow based on dynamic max
-  const hasOverflow = completedHabits.length > maxVisible
-  const visibleHabits = hasOverflow ? completedHabits.slice(0, maxVisible) : completedHabits
+  // Calculate overflow - only show badge if 2+ items hidden
+  // If only 1 item would be hidden, just show all items instead of "+1" badge
   const overflowCount = completedHabits.length - maxVisible
+  const showOverflowBadge = overflowCount > 1
+  const visibleHabits = showOverflowBadge
+    ? completedHabits.slice(0, maxVisible)
+    : completedHabits
 
   return (
     <button
@@ -120,8 +123,8 @@ export const DayCell = memo(function DayCell({
           )
         })}
 
-        {/* Overflow dot - styled like a system dot */}
-        {hasOverflow && (
+        {/* Overflow dot - only shown if 2+ items hidden */}
+        {showOverflowBadge && (
           <div
             className="w-5 h-5 sm:w-7 sm:h-7 rounded-full flex items-center justify-center flex-shrink-0 bg-zinc-700 border border-zinc-600"
             title={`+${overflowCount} more`}

@@ -62,11 +62,13 @@ interface UseGoogleAuthReturn {
   signIn: () => void
   signOut: () => void
   getAccessToken: () => string | null
+  refreshToken: () => Promise<string | null>
 }
 
 const SCOPES = 'https://www.googleapis.com/auth/drive.appdata email profile'
 const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest'
 const STORAGE_KEY = 'habit-google-auth'
+const TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000 // Refresh 5 min before expiry
 
 export function useGoogleAuth(): UseGoogleAuthReturn {
   const [isInitialized, setIsInitialized] = useState(false)
@@ -77,7 +79,154 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
   const [accessToken, setAccessToken] = useState<string | null>(null)
 
   const tokenClientRef = useRef<TokenClient | null>(null)
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const refreshPromiseRef = useRef<Promise<string | null> | null>(null)
   const isEnabled = isGoogleAuthEnabled()
+
+  // Schedule automatic token refresh
+  const scheduleTokenRefresh = useCallback((expiresAt: number) => {
+    // Clear any existing timer
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current)
+    }
+
+    const refreshTime = expiresAt - TOKEN_REFRESH_BUFFER_MS - Date.now()
+    if (refreshTime <= 0) {
+      // Token already needs refresh
+      return
+    }
+
+    refreshTimerRef.current = setTimeout(() => {
+      console.log('Auto-refreshing token...')
+      doRefreshToken()
+    }, refreshTime)
+  }, [])
+
+  // Internal refresh token implementation
+  const doRefreshToken = useCallback((): Promise<string | null> => {
+    // Return existing promise if refresh already in progress
+    if (refreshPromiseRef.current) {
+      return refreshPromiseRef.current
+    }
+
+    if (!window.google?.accounts?.oauth2) {
+      return Promise.resolve(null)
+    }
+
+    const promise = new Promise<string | null>((resolve) => {
+      const client = window.google!.accounts.oauth2.initTokenClient({
+        client_id: config.googleClientId!,
+        scope: SCOPES,
+        callback: async (response: TokenResponse) => {
+          refreshPromiseRef.current = null
+
+          if (response.error) {
+            console.error('Token refresh error:', response.error)
+            // On refresh failure, sign out
+            setUser(null)
+            setAccessToken(null)
+            setIsSignedIn(false)
+            localStorage.removeItem(STORAGE_KEY)
+            resolve(null)
+            return
+          }
+
+          try {
+            window.gapi!.client.setToken({ access_token: response.access_token })
+
+            const expiresAt = Date.now() + (response.expires_in * 1000)
+
+            // Update stored auth with existing user info
+            const stored = localStorage.getItem(STORAGE_KEY)
+            if (stored) {
+              const auth: StoredAuth = JSON.parse(stored)
+              const authData: StoredAuth = {
+                user: auth.user,
+                accessToken: response.access_token,
+                expiresAt,
+              }
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(authData))
+            }
+
+            setAccessToken(response.access_token)
+            scheduleTokenRefresh(expiresAt)
+            resolve(response.access_token)
+          } catch (err) {
+            console.error('Failed to refresh token:', err)
+            resolve(null)
+          }
+        },
+        error_callback: (err) => {
+          refreshPromiseRef.current = null
+          console.error('Token refresh error callback:', err)
+          resolve(null)
+        },
+      })
+
+      // Request token silently (no popup)
+      client.requestAccessToken({ prompt: '' })
+    })
+
+    refreshPromiseRef.current = promise
+    return promise
+  }, [scheduleTokenRefresh])
+
+  // Attempt silent refresh on init when token is expired but user exists
+  const attemptSilentRefresh = useCallback((storedUser: GoogleUser) => {
+    if (!window.google?.accounts?.oauth2) {
+      // Google not ready yet, clear storage
+      localStorage.removeItem(STORAGE_KEY)
+      setUser(null)
+      setIsSignedIn(false)
+      return
+    }
+
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: config.googleClientId!,
+      scope: SCOPES,
+      callback: async (response: TokenResponse) => {
+        if (response.error) {
+          console.error('Silent refresh failed:', response.error)
+          // Silent refresh failed, user needs to sign in again
+          localStorage.removeItem(STORAGE_KEY)
+          setUser(null)
+          setIsSignedIn(false)
+          return
+        }
+
+        try {
+          window.gapi!.client.setToken({ access_token: response.access_token })
+
+          const expiresAt = Date.now() + (response.expires_in * 1000)
+
+          // Update stored auth
+          const authData: StoredAuth = {
+            user: storedUser,
+            accessToken: response.access_token,
+            expiresAt,
+          }
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(authData))
+
+          setAccessToken(response.access_token)
+          scheduleTokenRefresh(expiresAt)
+        } catch (err) {
+          console.error('Failed during silent refresh:', err)
+          localStorage.removeItem(STORAGE_KEY)
+          setUser(null)
+          setIsSignedIn(false)
+        }
+      },
+      error_callback: (err) => {
+        console.error('Silent refresh error:', err)
+        localStorage.removeItem(STORAGE_KEY)
+        setUser(null)
+        setIsSignedIn(false)
+      },
+    })
+
+    // Request token silently
+    client.requestAccessToken({ prompt: '' })
+  }, [scheduleTokenRefresh])
 
   // Initialize Google APIs
   useEffect(() => {
@@ -112,14 +261,22 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
             try {
               const auth: StoredAuth = JSON.parse(stored)
               // Check if token is still valid (with 5 min buffer)
-              if (auth.expiresAt > Date.now() + 5 * 60 * 1000) {
+              if (auth.expiresAt > Date.now() + TOKEN_REFRESH_BUFFER_MS) {
                 setUser(auth.user)
                 setAccessToken(auth.accessToken)
                 setIsSignedIn(true)
                 window.gapi!.client.setToken({ access_token: auth.accessToken })
+
+                // Schedule automatic token refresh
+                scheduleTokenRefresh(auth.expiresAt)
               } else {
-                // Token expired, clear storage
-                localStorage.removeItem(STORAGE_KEY)
+                // Token expired but we have user info - try silent refresh
+                // Keep user info visible while refreshing
+                setUser(auth.user)
+                setIsSignedIn(true)
+
+                // Try silent token refresh
+                attemptSilentRefresh(auth.user)
               }
             } catch {
               localStorage.removeItem(STORAGE_KEY)
@@ -185,6 +342,9 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
           setUser(userInfo)
           setAccessToken(response.access_token)
           setIsSignedIn(true)
+
+          // Schedule automatic token refresh
+          scheduleTokenRefresh(expiresAt)
         } catch (err) {
           console.error('Failed to get user info:', err)
           setError('Failed to get user info')
@@ -203,7 +363,7 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
 
     // Request access token - use empty prompt for silent refresh, 'consent' for first time
     client.requestAccessToken({ prompt: '' })
-  }, [isInitialized])
+  }, [isInitialized, scheduleTokenRefresh])
 
   // Sign out
   const signOut = useCallback(() => {
@@ -226,6 +386,23 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
     return accessToken
   }, [accessToken])
 
+  // Clear timer on sign out
+  const signOutWithCleanup = useCallback(() => {
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current)
+    }
+    signOut()
+  }, [signOut])
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current)
+      }
+    }
+  }, [])
+
   return {
     isEnabled,
     isInitialized,
@@ -234,8 +411,9 @@ export function useGoogleAuth(): UseGoogleAuthReturn {
     user,
     error,
     signIn,
-    signOut,
+    signOut: signOutWithCleanup,
     getAccessToken,
+    refreshToken: doRefreshToken,
   }
 }
 

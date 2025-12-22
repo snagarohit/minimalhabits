@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { saveToGDrive, loadFromGDrive } from '../services/driveStorage'
+import { toast } from 'sonner'
+import { saveToGDrive, loadFromGDrive, type TokenRefreshCallback } from '../services/driveStorage'
 import type { HabitData } from '../types'
 
 export type SyncStatus = 'idle' | 'syncing' | 'synced' | 'error' | 'offline'
@@ -9,6 +10,7 @@ interface UseCloudSyncOptions {
   isSignedIn: boolean
   localData: HabitData
   onDataLoaded: (data: HabitData) => void
+  onTokenRefresh?: TokenRefreshCallback
 }
 
 interface UseCloudSyncReturn {
@@ -26,6 +28,7 @@ export function useCloudSync({
   isSignedIn,
   localData,
   onDataLoaded,
+  onTokenRefresh,
 }: UseCloudSyncOptions): UseCloudSyncReturn {
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('idle')
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null)
@@ -34,6 +37,12 @@ export function useCloudSync({
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingDataRef = useRef<HabitData | null>(null)
   const isMountedRef = useRef(true)
+  const localDataRef = useRef(localData)
+
+  // Keep localDataRef up to date
+  useEffect(() => {
+    localDataRef.current = localData
+  }, [localData])
 
   useEffect(() => {
     isMountedRef.current = true
@@ -45,38 +54,42 @@ export function useCloudSync({
     }
   }, [])
 
-  // Load from cloud on sign in
-  useEffect(() => {
-    if (isSignedIn && accessToken) {
-      loadFromCloud()
-    }
-  }, [isSignedIn, accessToken])
-
-  const loadFromCloud = async () => {
+  const loadFromCloud = useCallback(async (source: 'init' | 'visibility' | 'manual' = 'manual') => {
     if (!accessToken) return
 
     setSyncStatus('syncing')
     setSyncError(null)
 
+    const sourceLabel = source === 'init' ? 'Initial' : source === 'visibility' ? 'Tab visible' : 'Manual'
+    toast.loading(`${sourceLabel}: Syncing from cloud...`, { id: 'cloud-sync' })
+
     try {
-      const { data: cloudData } = await loadFromGDrive(accessToken)
+      const { data: cloudData } = await loadFromGDrive(accessToken, onTokenRefresh)
 
       if (!isMountedRef.current) return
 
       if (cloudData) {
         // Merge strategy: use cloud data if it has more recent changes
         // For now, we'll use cloud data and merge any local-only items
-        const mergedData = mergeData(localData, cloudData)
+        const currentLocalData = localDataRef.current
+        const mergedData = mergeData(currentLocalData, cloudData)
         onDataLoaded(mergedData)
 
         // Save merged data back to cloud if different
         if (JSON.stringify(mergedData) !== JSON.stringify(cloudData)) {
-          await saveToGDrive(accessToken, mergedData)
+          await saveToGDrive(accessToken, mergedData, onTokenRefresh)
+          toast.success(`${sourceLabel}: Synced & merged with cloud`, { id: 'cloud-sync' })
+        } else {
+          toast.success(`${sourceLabel}: Up to date`, { id: 'cloud-sync' })
         }
       } else {
         // No cloud data, upload local data
-        if (localData.habits.length > 0 || localData.groups.length > 0) {
-          await saveToGDrive(accessToken, localData)
+        const currentLocalData = localDataRef.current
+        if (currentLocalData.habits.length > 0 || currentLocalData.groups.length > 0) {
+          await saveToGDrive(accessToken, currentLocalData, onTokenRefresh)
+          toast.success(`${sourceLabel}: Uploaded to cloud`, { id: 'cloud-sync' })
+        } else {
+          toast.success(`${sourceLabel}: No data to sync`, { id: 'cloud-sync' })
         }
       }
 
@@ -85,12 +98,21 @@ export function useCloudSync({
         setLastSyncTime(new Date())
       }
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Sync failed'
+      toast.error(`${sourceLabel}: ${errorMsg}`, { id: 'cloud-sync' })
       if (isMountedRef.current) {
         setSyncStatus('error')
-        setSyncError(error instanceof Error ? error.message : 'Sync failed')
+        setSyncError(errorMsg)
       }
     }
-  }
+  }, [accessToken, onDataLoaded, onTokenRefresh])
+
+  // Load from cloud on sign in
+  useEffect(() => {
+    if (isSignedIn && accessToken) {
+      loadFromCloud('init')
+    }
+  }, [isSignedIn, accessToken, loadFromCloud])
 
   const syncNow = useCallback(async () => {
     if (!accessToken || !isSignedIn) return
@@ -99,7 +121,7 @@ export function useCloudSync({
     setSyncError(null)
 
     try {
-      await saveToGDrive(accessToken, localData)
+      await saveToGDrive(accessToken, localDataRef.current, onTokenRefresh)
 
       if (isMountedRef.current) {
         setSyncStatus('synced')
@@ -111,7 +133,7 @@ export function useCloudSync({
         setSyncError(error instanceof Error ? error.message : 'Sync failed')
       }
     }
-  }, [accessToken, isSignedIn, localData])
+  }, [accessToken, isSignedIn, onTokenRefresh])
 
   // Debounced save to cloud
   const saveToCloud = useCallback((data: HabitData) => {
@@ -131,22 +153,45 @@ export function useCloudSync({
       const dataToSave = pendingDataRef.current
       if (!dataToSave || !accessToken) return
 
+      toast.loading('Saving to cloud...', { id: 'cloud-save' })
+
       try {
-        await saveToGDrive(accessToken, dataToSave)
+        await saveToGDrive(accessToken, dataToSave, onTokenRefresh)
 
         if (isMountedRef.current) {
           setSyncStatus('synced')
           setLastSyncTime(new Date())
           setSyncError(null)
+          toast.success('Saved to cloud', { id: 'cloud-save' })
         }
       } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Save failed'
+        toast.error(`Save failed: ${errorMsg}`, { id: 'cloud-save' })
         if (isMountedRef.current) {
           setSyncStatus('error')
-          setSyncError(error instanceof Error ? error.message : 'Sync failed')
+          setSyncError(errorMsg)
         }
       }
     }, SYNC_DEBOUNCE_MS)
-  }, [accessToken, isSignedIn])
+  }, [accessToken, isSignedIn, onTokenRefresh])
+
+  // Sync when tab becomes visible (for cross-device sync)
+  useEffect(() => {
+    if (!isSignedIn || !accessToken) return
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Tab became visible, sync from cloud to get latest data
+        loadFromCloud('visibility')
+      }
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [isSignedIn, accessToken, loadFromCloud])
 
   return {
     syncStatus,

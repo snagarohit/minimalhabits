@@ -409,10 +409,13 @@ function DayCellVertical({ day, completions, totalHabits: _totalHabits, habitDis
 
   const completedHabits = completions.filter(c => c.isComplete)
 
-  // Calculate overflow
-  const hasOverflow = completedHabits.length > MAX_VISIBLE_HABITS_VERTICAL
-  const visibleHabits = hasOverflow ? completedHabits.slice(0, MAX_VISIBLE_HABITS_VERTICAL) : completedHabits
+  // Calculate overflow - only show badge if 2+ items hidden
+  // If only 1 item would be hidden, just show all items instead of "+1" badge
   const overflowCount = completedHabits.length - MAX_VISIBLE_HABITS_VERTICAL
+  const showOverflowBadge = overflowCount > 1
+  const visibleHabits = showOverflowBadge
+    ? completedHabits.slice(0, MAX_VISIBLE_HABITS_VERTICAL)
+    : completedHabits
 
   return (
     <div
@@ -458,8 +461,8 @@ function DayCellVertical({ day, completions, totalHabits: _totalHabits, habitDis
           )
         })}
 
-        {/* Overflow dot - styled like a system dot */}
-        {hasOverflow && (
+        {/* Overflow dot - only shown if 2+ items hidden */}
+        {showOverflowBadge && (
           <div
             className="w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center flex-shrink-0 bg-zinc-700 border border-zinc-600"
             title={`+${overflowCount} more`}

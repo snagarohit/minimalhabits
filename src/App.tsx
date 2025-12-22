@@ -14,6 +14,7 @@ import { useHabits } from './hooks/useHabits'
 import { useFeedback } from './hooks/useFeedback'
 import { useGoogleAuth } from './hooks/useGoogleAuth'
 import { useCloudSync } from './hooks/useCloudSync'
+import { Toaster } from './components/ui/sonner'
 import type { HabitData } from './types'
 
 // Check if user has accepted terms
@@ -40,6 +41,7 @@ function App() {
     signIn,
     signOut,
     getAccessToken,
+    refreshToken,
   } = useGoogleAuth()
 
   // Cloud sync callback
@@ -84,6 +86,7 @@ function App() {
     isSignedIn,
     localData: getAllData(),
     onDataLoaded: loadAllData,
+    onTokenRefresh: refreshToken,
   })
 
   // Trigger cloud save when data changes
@@ -305,79 +308,48 @@ function App() {
     return visibleHabits.filter(h => habitIdsWithData.has(h.id))
   }, [viewMode, currentDate, visibleDates, visibleHabits, getCompletionValue])
 
-  // Compute display colors for visible habits
-  // Uses OKLCH color space with evenly-spaced hues for maximum distinguishability
+  // Compute display colors for habits shown in current view
+  // Uses a curated palette for ≤10 habits, falls back to algorithmic for more
+  // Assigned based on what's visible in legend, sorted alphabetically
   const habitDisplayColors = useMemo(() => {
     const colorMap = new Map<string, string>()
-    const n = visibleHabits.length
 
-    if (n === 0) return colorMap
+    // Curated palette - hand-picked for maximum distinguishability
+    const PALETTE = [
+      '#e60049', // red
+      '#0bb4ff', // cyan
+      '#50e991', // green
+      '#e6d800', // yellow
+      '#9b19f5', // purple
+      '#ffa300', // orange
+      '#dc0ab4', // magenta
+      '#00bfa0', // teal
+      '#4421af', // indigo
+      '#b3d4ff', // light blue
+    ]
 
-    // Linear RGB to sRGB gamma correction
-    const linearToSrgb = (c: number): number => {
-      return c <= 0.0031308 ? 12.92 * c : 1.055 * Math.pow(c, 1 / 2.4) - 0.055
+    // Sort habits alphabetically by name
+    const sortedHabits = [...habitsWithDataInView].sort((a, b) =>
+      a.name.localeCompare(b.name)
+    )
+
+    const k = sortedHabits.length
+
+    if (k <= PALETTE.length) {
+      // Use curated palette
+      sortedHabits.forEach((habit, i) => {
+        colorMap.set(habit.id, PALETTE[i])
+      })
+    } else {
+      // Fall back to evenly-spaced hues in HSL for >10 habits
+      sortedHabits.forEach((habit, i) => {
+        const hue = Math.round((i * 360) / k)
+        colorMap.set(habit.id, `hsl(${hue}, 70%, 60%)`)
+      })
     }
-
-    // OKLCH to sRGB (via OKLab)
-    // L: lightness (0-1), C: chroma (0-0.4), H: hue in degrees (0-360)
-    const oklchToRgb = (L: number, C: number, H: number): [number, number, number] => {
-      // Convert OKLCH to OKLab
-      const hRad = H * Math.PI / 180
-      const a = C * Math.cos(hRad)
-      const b = C * Math.sin(hRad)
-
-      // OKLab to linear RGB
-      const l_ = L + 0.3963377774 * a + 0.2158037573 * b
-      const m_ = L - 0.1055613458 * a - 0.0638541728 * b
-      const s_ = L - 0.0894841775 * a - 1.2914855480 * b
-      const l = l_ * l_ * l_, m = m_ * m_ * m_, s = s_ * s_ * s_
-
-      return [
-        linearToSrgb(+4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
-        linearToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
-        linearToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s)
-      ]
-    }
-
-    // RGB to hex, clamping to valid gamut
-    const rgbToHex = (r: number, g: number, b: number): string => {
-      const toHex = (c: number) => Math.round(Math.max(0, Math.min(1, c)) * 255).toString(16).padStart(2, '0')
-      return `#${toHex(r)}${toHex(g)}${toHex(b)}`
-    }
-
-    // Find maximum in-gamut chroma for a given L and H
-    const maxChroma = (L: number, H: number): number => {
-      let lo = 0, hi = 0.4
-      while (hi - lo > 0.001) {
-        const mid = (lo + hi) / 2
-        const rgb = oklchToRgb(L, mid, H)
-        if (rgb.every(c => c >= 0 && c <= 1)) {
-          lo = mid
-        } else {
-          hi = mid
-        }
-      }
-      return lo
-    }
-
-    // Generate evenly-spaced hues for N habits
-    // Use consistent lightness and high chroma for vivid, distinguishable colors
-    const LIGHTNESS = 0.7 // Good visibility on dark backgrounds
-    const CHROMA_RATIO = 0.85 // Use 85% of max chroma for safety margin
-
-    visibleHabits.forEach((habit, i) => {
-      // Evenly space hues, starting at red (0°)
-      const hue = (i * 360 / n) % 360
-
-      // Find max chroma for this hue and use most of it
-      const C = maxChroma(LIGHTNESS, hue) * CHROMA_RATIO
-      const rgb = oklchToRgb(LIGHTNESS, C, hue)
-
-      colorMap.set(habit.id, rgbToHex(...rgb))
-    })
 
     return colorMap
-  }, [visibleHabits])
+  }, [habitsWithDataInView])
 
   // Show welcome screen if user hasn't accepted terms
   if (!hasAccepted) {
@@ -716,6 +688,9 @@ function App() {
 
       {/* Privacy Policy dialog */}
       <PrivacyPolicy isOpen={showPrivacy} onClose={() => setShowPrivacy(false)} />
+
+      {/* Toast notifications */}
+      <Toaster />
     </div>
   )
 }
